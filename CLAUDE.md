@@ -20,7 +20,7 @@
 
 ## ディレクトリ
 - `game/` — Godot プロジェクト（`project.godot`, `export_presets.cfg`）
-  - `scripts/sim/` 交通ロジック（純ロジック）／`scripts/view/` 表示／`scripts/ui/` UI／`scripts/core/` 起動・設定・調整値
+  - `scripts/sim/` 交通ロジック（純ロジック）／`scripts/view/` 表示（`world_view.gd` 地面・信号・熱マップ・波、`agents_view.gd` 車・人・立ち話・雨、`camera_rig.gd`）／`scripts/ui/` UI／`scripts/core/` 起動・設定・調整値
 - `docs/spec/` — Muse の企画書・仕様書（編集しない。更新版は差し替え）
 - `docs/` — 実装側の計画・報告
 - `tools/setup_godot.sh` — Godot と Web テンプレートの導入（冪等・SHA512 検証）

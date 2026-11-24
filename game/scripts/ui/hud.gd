@@ -16,6 +16,7 @@ signal popup_demolish
 signal popup_closed
 signal home_pressed
 signal mode_toggled(is_24h: bool)
+signal rain_toggled(on: bool)
 
 const PANEL_W := 390.0
 const BAR_H := 68.0
@@ -31,6 +32,7 @@ var paused_label: Label
 var menu_button: Button
 var home_button: Button
 var mode_button: Button
+var rain_button: Button
 var info_card: PanelContainer
 var info_box: VBoxContainer
 
@@ -206,6 +208,20 @@ func _build_corner_buttons(root: Control) -> void:
 		mode_button.text = "24時間" if on else "朝ピーク"
 		mode_toggled.emit(on))
 	root.add_child(mode_button)
+	# 雨の見た目の確認用（傘・雨粒・濡れた路面。交通には影響しない）
+	rain_button = Button.new()
+	rain_button.text = "晴れ"
+	rain_button.toggle_mode = true
+	rain_button.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	rain_button.offset_left = 342
+	rain_button.offset_top = -88
+	rain_button.offset_right = 462
+	rain_button.offset_bottom = -16
+	rain_button.focus_mode = Control.FOCUS_NONE
+	rain_button.toggled.connect(func(on):
+		rain_button.text = "雨" if on else "晴れ"
+		rain_toggled.emit(on))
+	root.add_child(rain_button)
 
 func _build_panel(root: Control) -> void:
 	panel = PanelContainer.new()
@@ -430,8 +446,8 @@ func _lbl(text: String, size := 20, color := Color(1, 1, 1)) -> Label:
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return l
 
-## totals: 街全体の理由ごとの合計 / picked: 選んだ人 {name, d, cause}（空なら表示しない）
-func show_info(totals: Dictionary, picked: Dictionary, can_pick := true) -> void:
+## 停止中に表示する、街全体の不満の内訳（理由ごとの合計）
+func show_info(totals: Dictionary) -> void:
 	for c in info_box.get_children():
 		c.queue_free()
 	info_box.add_child(_lbl("いまの不満の内訳", 22))
@@ -462,24 +478,6 @@ func show_info(totals: Dictionary, picked: Dictionary, can_pick := true) -> void
 				continue
 			info_box.add_child(_legend_row(c[1], c[2], v / sum, "%d%%" % int(round(v / sum * 100.0))))
 	info_box.add_child(_lbl("赤い地面 = 待ちがたまっている", 16, Color(1.0, 0.7, 0.6)))
-	if picked.is_empty():
-		if can_pick:
-			info_box.add_child(_lbl("人をタップすると理由が見られます", 16, Color(0.8, 0.8, 0.8)))
-	else:
-		info_box.add_child(HSeparator.new())
-		info_box.add_child(_lbl("%s　不満 %d" % [picked.name, int(round(picked.d))], 22, Color(1.0, 0.9, 0.3)))
-		var cs: Dictionary = picked.cause
-		var psum := 0.0
-		for k in cs:
-			psum += cs[k]
-		if psum < 0.01:
-			info_box.add_child(_lbl("この人は、いまのところ不満なし", 18, Color(0.8, 0.8, 0.8)))
-		else:
-			var keys := cs.keys()
-			keys.sort_custom(func(a, b): return cs[a] > cs[b])
-			for k in keys.slice(0, 3):
-				var cd := _cause_def(k)
-				info_box.add_child(_legend_row(cd[1], cd[2], cs[k] / psum, "%d%%" % int(round(cs[k] / psum * 100.0))))
 	info_card.visible = true
 
 func _legend_row(name: String, color: Color, frac: float, value: String) -> Control:

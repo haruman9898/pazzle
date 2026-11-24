@@ -110,7 +110,7 @@ const FAIL_GAME_SECONDS := 7200.0
 ## 設置の瞬間に広がる「安心の波」（ルール追加。Muse の確認待ちの暫定値）
 const WAVE_SPEED := 14.0       # 波の広がる速さ（マス/シム秒）
 const WAVE_MAX_R := 14.0
-const WAVE_RELIEF := 0.5       # 波が通った人の不満を、この割合だけ減らす
+const WAVE_RELIEF := 0.2       # 波が通った人の不満を、この割合だけ減らす（ユーザー決定: 約20%）
 ## 渋滞の熱マップ: 待っている人がいたセルに熱がたまり、ゆっくり冷める
 const HEAT_TAU := 25.0         # 冷める速さ（シム秒）
 const HEAT_FULL := 8.0         # この値で最も赤くなる

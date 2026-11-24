@@ -3,8 +3,6 @@ extends Node3D
 ## 表示（グレーボックス）。SimWorld の状態を読んで箱と色で描く。
 ## モデル規約: ピボット = footprint の底面中心（地面 y=0）。差し替え時もこの規約を守る。
 
-const MAX_CARS := 256
-const MAX_PEDS := 512
 const MAX_EVENTS := 32
 
 const C_GROUND := Color(0.36, 0.42, 0.34)
@@ -18,19 +16,16 @@ const C_ANGRY := Color(0.95, 0.2, 0.15)
 const AREA_COLORS := [Color(0.55, 0.5, 0.42), Color(0.45, 0.52, 0.6), Color(0.6, 0.48, 0.45), Color(0.47, 0.55, 0.45)]
 
 var sim: SimWorld
-var _car_mm: MultiMesh
-var _ped_mm: MultiMesh
 var _event_mm: MultiMesh
 var _signal_root: Node3D
 var _ghost_root: Node3D
 var _highlight: MeshInstance3D
 var _highlight_mat: StandardMaterial3D
-var selected = null      # 停止中に選ばれた人（車 or 歩行者）
 var _heat_mm: MultiMesh
 var _heat_node: MultiMeshInstance3D
 var _wave_ring: MeshInstance3D
 var _wave_mat: StandardMaterial3D
-var _sel_ring: MeshInstance3D
+var _road_mat: StandardMaterial3D
 var _lamp_mats: Array = []
 var _pool_mat: StandardMaterial3D
 var _car_lamps := {}   # arm -> StandardMaterial3D
@@ -80,6 +75,7 @@ func _build_static() -> void:
 		_box(root, Vector3(L - lo, 0.04, L - lo), c, 0.0, _mat(AREA_COLORS[b]))
 	# 道路
 	var road := _mat(C_ROAD)
+	_road_mat = road
 	_box(root, Vector3(L * 2, 0.02, 2.0), Vector2.ZERO, 0.0, road)
 	_box(root, Vector3(2.0, 0.02, L * 2), Vector2.ZERO, 0.0, road)
 	# 歩道（各エリアのL字）
@@ -95,8 +91,6 @@ func _build_static() -> void:
 		_box(root, Vector3(0.06, 0.025, L - 1.0), Vector2(0.0, sgn * (1.0 + (L - 1.0) * 0.5)), 0.0, line)
 
 func _build_dynamic() -> void:
-	_car_mm = _make_mm(BoxMesh.new(), Vector3(Tuning.CAR_LENGTH, 0.4, Tuning.CAR_WIDTH), MAX_CARS)
-	_ped_mm = _make_mm(BoxMesh.new(), Vector3(0.26, 0.55, 0.26), MAX_PEDS)
 	var cyl := CylinderMesh.new()
 	cyl.top_radius = 0.5
 	cyl.bottom_radius = 0.5
@@ -114,25 +108,6 @@ func _build_dynamic() -> void:
 	emi.material_override = em
 	emi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(emi)
-
-func _make_mm(mesh: BoxMesh, size: Vector3, count: int) -> MultiMesh:
-	mesh.size = size
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = true
-	mm.mesh = mesh
-	mm.instance_count = count
-	mm.visible_instance_count = 0
-	var mi := MultiMeshInstance3D.new()
-	mi.multimesh = mm
-	var m := StandardMaterial3D.new()
-	m.vertex_color_use_as_albedo = true
-	m.emission_enabled = true
-	m.emission = Color(1, 1, 1)
-	m.emission_energy_multiplier = 0.18   # 夜でも車と人が見えるように、わずかに自発光させる
-	mi.material_override = m
-	add_child(mi)
-	return mm
 
 ## 信号機（4本の柱と灯器）＋横断歩道＋停止線
 func _build_signal() -> void:
@@ -222,19 +197,6 @@ func _build_extras() -> void:
 	_wave_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_wave_ring.visible = false
 	add_child(_wave_ring)
-	# 選ばれた人のリング
-	var sm := TorusMesh.new()
-	sm.inner_radius = 0.36
-	sm.outer_radius = 0.46
-	sm.rings = 24
-	sm.ring_segments = 6
-	_sel_ring = MeshInstance3D.new()
-	_sel_ring.mesh = sm
-	_sel_ring.material_override = _mat(Color(1.0, 0.9, 0.2), 1.0, true)
-	_sel_ring.scale = Vector3(1, 0.3, 1)
-	_sel_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_sel_ring.visible = false
-	add_child(_sel_ring)
 	# 街灯（夜に灯る）
 	_pool_mat = _mat(Color(1.0, 0.78, 0.4), 0.0, true)
 	_pool_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -270,6 +232,11 @@ func _build_extras() -> void:
 			pool.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			add_child(pool)
 
+## 雨の日は路面が濡れて暗くなる（見た目だけ）
+func set_wet(on: bool) -> void:
+	_road_mat.albedo_color = C_ROAD.darkened(0.35) if on else C_ROAD
+	_road_mat.roughness = 0.35 if on else 1.0
+
 func set_heat_visible(on: bool) -> void:
 	_heat_node.visible = on
 
@@ -299,11 +266,6 @@ func _update_extras() -> void:
 		_wave_mat.albedo_color.a = clampf(1.0 - r / Tuning.WAVE_MAX_R, 0.0, 0.9)
 	else:
 		_wave_ring.visible = false
-	if selected != null and not selected.done:
-		_sel_ring.visible = true
-		_sel_ring.position = Vector3(selected.pos.x, 0.1, selected.pos.y)
-	else:
-		_sel_ring.visible = false
 
 # ---------------------------------------------------------------------
 func _process(delta: float) -> void:
@@ -312,28 +274,9 @@ func _process(delta: float) -> void:
 	_t += delta
 	if _highlight.visible:
 		_highlight_mat.albedo_color.a = 0.25 + 0.2 * sin(_t * 5.0)
-	_update_agents()
 	_update_extras()
 	_update_signal()
 	_update_events()
-
-func _update_agents() -> void:
-	var n := mini(sim.cars.size(), MAX_CARS)
-	_car_mm.visible_instance_count = n
-	for i in n:
-		var c = sim.cars[i]
-		var ang := atan2(-c.dir.y, c.dir.x)
-		var sc: float = 1.0 + 0.5 * c.pulse
-		var t := Transform3D(Basis(Vector3.UP, ang).scaled(Vector3(sc, sc, sc)), Vector3(c.pos.x, 0.2 * sc, c.pos.y))
-		_car_mm.set_instance_transform(i, t)
-		_car_mm.set_instance_color(i, C_CAR.lerp(C_ANGRY, c.d / 100.0).lerp(Color.WHITE, c.pulse * 0.6))
-	var m := mini(sim.peds.size(), MAX_PEDS)
-	_ped_mm.visible_instance_count = m
-	for i in m:
-		var p = sim.peds[i]
-		var ps: float = 1.0 + 0.6 * p.pulse
-		_ped_mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(ps, ps, ps)), Vector3(p.pos.x, 0.275 * ps, p.pos.y)))
-		_ped_mm.set_instance_color(i, C_PED.lerp(C_ANGRY, p.d / 100.0).lerp(Color.WHITE, p.pulse * 0.6))
 
 func _update_signal() -> void:
 	_signal_root.visible = sim.signal_on

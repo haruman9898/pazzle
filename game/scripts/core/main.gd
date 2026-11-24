@@ -10,6 +10,8 @@ const LONG_PRESS := 0.35        # 長押し判定（秒）。長押し後のド�
 
 var sim := SimWorld.new()
 var view: WorldView
+var agents: AgentsView
+var raining := false
 var rig: CameraRig
 var hud: Hud
 var state := State.PLAY
@@ -21,7 +23,6 @@ var environment: Environment
 var sun: DirectionalLight3D
 var _light_keys: Array = []
 var _was_stopped := false
-var picked = null               # 停止中に選んだ人
 var _sim_ms := 0.0             # 1フレームあたりのシム処理時間（ms、平滑化）
 
 # 入力
@@ -51,6 +52,9 @@ func _ready() -> void:
 	view = WorldView.new()
 	add_child(view)
 	view.setup(sim)
+	agents = AgentsView.new()
+	add_child(agents)
+	agents.setup(sim)
 	rig = CameraRig.new()
 	add_child(rig)
 	hud = Hud.new()
@@ -67,7 +71,9 @@ func _ready() -> void:
 	hud.popup_closed.connect(_close_popup)
 	hud.home_pressed.connect(func(): rig.go_home())
 	hud.mode_toggled.connect(_on_mode_toggled)
+	hud.rain_toggled.connect(_on_rain_toggled)
 	_build_light_keys()
+	_read_url_params()
 
 func _process(delta: float) -> void:
 	if state == State.PLAY:
@@ -86,10 +92,8 @@ func _process(delta: float) -> void:
 	if stopped != _was_stopped:
 		_was_stopped = stopped
 		view.set_heat_visible(stopped)
-		picked = null
-		view.selected = null
 		if stopped:
-			hud.show_info(sim.cause_totals(), {}, state == State.MENU)
+			hud.show_info(sim.cause_totals())
 		else:
 			hud.hide_info()
 	_apply_light(sim.clock_hours())
@@ -129,9 +133,6 @@ func _on_item(item: String) -> void:
 	hud.close_panel()
 	rig.shift_for_panel(0.0)
 	state = State.PLACE
-	hud.show_info(sim.cause_totals(), {}, false)
-	picked = null
-	view.selected = null
 	place_state = 0
 	place_preset = 1
 	view.set_highlight(true)
@@ -183,15 +184,6 @@ func _on_tap(screen: Vector2) -> void:
 	var g = rig.screen_to_ground(screen)
 	if g == null:
 		return
-	# 設置パネルを開いている間は、人をタップするとその人の不満の理由を表示する
-	# （配置中は、交差点のタップを配置に使うため、人の選択は行わない）
-	if state == State.MENU:
-		var a = _pick_agent(g)
-		if a != null:
-			picked = a
-			view.selected = a
-			hud.show_info(sim.cause_totals(), {"name": "車" if a.kind == SimWorld.KIND_CAR else "歩行者", "d": a.d, "cause": a.cause})
-			return
 	match state:
 		State.PLACE:
 			_on_place_tap(g)
@@ -199,20 +191,23 @@ func _on_tap(screen: Vector2) -> void:
 			if sim.signal_on and WorldView.hits_intersection(g):
 				_open_popup()
 
-func _pick_agent(g: Vector2):
-	var best = null
-	var bd := 0.75
-	for c in sim.cars:
-		var d: float = c.pos.distance_to(g)
-		if d < bd:
-			bd = d
-			best = c
-	for p in sim.peds:
-		var d: float = p.pos.distance_to(g) - 0.15   # 歩行者は小さいので少し選びやすくする
-		if d < bd:
-			bd = d
-			best = p
-	return best
+## URL で開始時刻と天気を指定できる（確認・共有用）。例: ?t=12  ?t=17.5&rain=1
+## t = 開始時刻（0〜24。24時間表示になる）、rain=1 で雨
+func _read_url_params() -> void:
+	if not OS.has_feature("web"):
+		return
+	var t = JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('t')")
+	var r = JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('rain')")
+	if t != null and str(t).is_valid_float():
+		hud.mode_button.button_pressed = true
+		sim.clock_s = clampf(float(str(t)), 0.0, 23.99) * 3600.0
+	if r != null and str(r) == "1":
+		hud.rain_button.button_pressed = true
+
+func _on_rain_toggled(on: bool) -> void:
+	raining = on
+	agents.set_raining(on)
+	view.set_wet(on)
 
 func _on_mode_toggled(is_24h: bool) -> void:
 	sim.loop_start_h = 0.0 if is_24h else Tuning.LOOP_START_H
@@ -246,13 +241,30 @@ func _apply_light(h: float) -> void:
 	var b: Array = _light_keys[i + 1]
 	var t := clampf((h - a[0]) / maxf(b[0] - a[0], 0.0001), 0.0, 1.0)
 	sun.rotation_degrees = Vector3(lerpf(a[1], b[1], t), lerpf(a[2], b[2], t), 0.0)
-	sun.light_color = (a[3] as Color).lerp(b[3], t)
 	var energy := lerpf(a[4], b[4], t)
+	var sun_col: Color = (a[3] as Color).lerp(b[3], t)
+	var amb_col: Color = (a[5] as Color).lerp(b[5], t)
+	var amb_e: float = lerpf(a[6], b[6], t)
+	var bg: Color = (a[7] as Color).lerp(b[7], t)
+	if raining:
+		# 雨の日は、光が弱く灰色がかる（見た目だけ）
+		var gray := Color(0.42, 0.45, 0.5) * clampf(bg.get_luminance() * 2.4, 0.2, 1.0)
+		sun_col = sun_col.lerp(Color(0.7, 0.72, 0.78), 0.6)
+		energy *= 0.55
+		amb_col = amb_col.lerp(Color(0.6, 0.62, 0.68), 0.5)
+		amb_e += 0.2
+		bg = bg.lerp(gray, 0.7)
+	sun.light_color = sun_col
 	sun.light_energy = energy
-	environment.ambient_light_color = (a[5] as Color).lerp(b[5], t)
-	environment.ambient_light_energy = lerpf(a[6], b[6], t)
-	environment.background_color = (a[7] as Color).lerp(b[7], t)
-	view.set_night(1.0 - clampf((energy - 0.3) / 0.5, 0.0, 1.0))
+	environment.ambient_light_color = amb_col
+	environment.ambient_light_energy = amb_e
+	environment.background_color = bg
+	var dark := 1.0 - clampf((energy - 0.3) / 0.5, 0.0, 1.0)
+	if raining:
+		dark = maxf(dark, 0.0)
+	view.set_night(dark)
+	agents.night = dark
+	agents.hour = h
 
 # ---------------------------------------------------------------------
 # 入力: 1本指ドラッグ = 移動 / 1本指長押し→ドラッグ = 回転 / 2本指 = ズーム

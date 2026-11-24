@@ -6,6 +6,11 @@ extends RefCounted
 const KIND_CAR := 0
 const KIND_PED := 1
 
+## 歩行者の役割（見た目の違いに使う。第4弾の事後診断でも人数を数える）
+const ROLE_CHILD := 0
+const ROLE_COMMUTER := 1
+const ROLE_SHOPPER := 2
+
 class Car:
 	var id: int
 	var kind := 0
@@ -33,6 +38,7 @@ class Car:
 	var hiyari_ids := {}
 	var cause := {}        # 不満の理由ごとの加算量（累計）
 	var pulse := 0.0       # 安心の波が通った直後の演出（1→0）
+	var look := 0          # 見た目の個体差（車の型など）
 	var done := false
 
 	func length() -> float:
@@ -63,6 +69,9 @@ class Ped:
 	var forced := false
 	var cause := {}        # 不満の理由ごとの加算量（累計）
 	var pulse := 0.0       # 安心の波が通った直後の演出（1→0）
+	var role := 1          # ROLE_*
+	var look := 0          # 見た目の個体差（色・傘・荷物の選び方に使う）
+	var dir := Vector2.RIGHT
 	var dest_block := 0
 	var dest_arm := 0
 	var dest_t := 0.0
@@ -103,6 +112,7 @@ var _crossers: Array = []
 var _spawn_rng := RandomNumberGenerator.new()
 var _route_rng := RandomNumberGenerator.new()
 var _misc_rng := RandomNumberGenerator.new()
+var _look_rng := RandomNumberGenerator.new()   # 見た目専用（ほかの乱数列に影響させない）
 var _ped_acc := 0.0
 var _car_acc := 0.0
 var _gauge_sum := 0.0
@@ -132,6 +142,7 @@ func reset_loop() -> void:
 	_spawn_rng.seed = seed_base
 	_route_rng.seed = seed_base + 7
 	_misc_rng.seed = seed_base + 99
+	_look_rng.seed = seed_base + 555
 
 func clock_hours() -> float:
 	return clock_s / 3600.0
@@ -263,6 +274,21 @@ func _door_t(rng: RandomNumberGenerator) -> float:
 	var u := pow(rng.randf(), Tuning.DOOR_NEAR_BIAS)
 	return lerpf(Tuning.DOOR_T_MIN, Tuning.DOOR_T_MAX, u)
 
+## 時間帯で役割の比率が変わる（登下校の時間は児童が多い）。見た目だけの違い。
+func _pick_role() -> int:
+	var h := clock_hours()
+	var school := (h >= 7.0 and h < 9.0) or (h >= 15.0 and h < 17.0)
+	var rush := (h >= 6.5 and h < 9.5) or (h >= 17.0 and h < 19.5)
+	var w_child := 0.45 if school else 0.06
+	var w_comm := 0.5 if rush else 0.2
+	var w_shop := 0.4 if (h >= 10.0 and h < 16.0) else 0.15
+	var r := _look_rng.randf() * (w_child + w_comm + w_shop)
+	if r < w_child:
+		return ROLE_CHILD
+	if r < w_child + w_comm:
+		return ROLE_COMMUTER
+	return ROLE_SHOPPER
+
 func _spawn_ped() -> void:
 	var r := _spawn_rng
 	var a := r.randi_range(0, 3)
@@ -284,6 +310,9 @@ func _spawn_ped() -> void:
 	p.cross = plan.cross
 	p.expected = plan.ideal_len / Tuning.PED_SPEED
 	p.pos = p.pts[0]
+	p.role = _pick_role()
+	p.look = _look_rng.randi()
+	p.dir = (p.pts[1] - p.pts[0]).normalized() if p.pts.size() > 1 else Vector2.RIGHT
 	peds.append(p)
 
 func _spawn_car() -> void:
@@ -329,6 +358,7 @@ func _spawn_car() -> void:
 	c.expected = c.length() / Tuning.CAR_SPEED
 	c.pos = start
 	c.dir = (c.pts[1] - c.pts[0]).normalized()
+	c.look = _look_rng.randi()
 	cars.append(c)
 
 # =====================================================================
@@ -711,6 +741,8 @@ func _step_peds(dt: float) -> void:
 			var b2: Vector2 = p.pts[p.seg + 1]
 			var l: float = a2.distance_to(b2)
 			p.pos = a2.lerp(b2, p.u / l) if l > 0.0001 else a2
+			if l > 0.0001:
+				p.dir = (b2 - a2) / l
 
 # =====================================================================
 # 不満度
