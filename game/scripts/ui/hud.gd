@@ -11,14 +11,13 @@ signal item_selected(item: String)
 signal preset_selected(index: int)
 signal place_confirmed
 signal place_cancelled
-signal place_finished
 signal popup_preset(index: int)
 signal popup_demolish
 signal popup_closed
 signal home_pressed
 
-const PANEL_W := 340.0
-const BAR_H := 56.0
+const PANEL_W := 390.0
+const BAR_H := 68.0
 
 var clock_label: Label
 var gauge_bar: ProgressBar
@@ -39,7 +38,6 @@ var place_presets: Array = []
 var place_cost: Label
 var place_confirm: Button
 var place_cancel: Button
-var place_finish: Button
 var popup: PanelContainer
 var popup_presets: Array = []
 var popup_demolish_btn: Button
@@ -68,7 +66,10 @@ func _ready() -> void:
 	paused_label = Label.new()
 	paused_label.text = "時間停止中"
 	paused_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	paused_label.position = Vector2(-60, BAR_H + 10)
+	paused_label.offset_left = -80
+	paused_label.offset_right = 80
+	paused_label.offset_top = BAR_H + 70
+	paused_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	paused_label.add_theme_color_override("font_color", Color(1, 0.9, 0.3))
 	paused_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
 	paused_label.add_theme_constant_override("outline_size", 5)
@@ -81,7 +82,7 @@ func _make_theme() -> Theme:
 	var f = load("res://assets/fonts/ui_font.otf")
 	if f:
 		th.default_font = f
-	th.default_font_size = 20
+	th.default_font_size = 24
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.1, 0.11, 0.13, 0.88)
 	sb.set_corner_radius_all(8)
@@ -102,14 +103,14 @@ func _build_top_bar(root: Control) -> void:
 	bar.add_child(hb)
 	clock_label = Label.new()
 	clock_label.text = "06:00"
-	clock_label.add_theme_font_size_override("font_size", 26)
-	clock_label.custom_minimum_size = Vector2(84, 0)
+	clock_label.add_theme_font_size_override("font_size", 32)
+	clock_label.custom_minimum_size = Vector2(100, 0)
 	hb.add_child(clock_label)
 	var gl := Label.new()
 	gl.text = "不満度"
 	hb.add_child(gl)
 	gauge_bar = ProgressBar.new()
-	gauge_bar.custom_minimum_size = Vector2(220, 22)
+	gauge_bar.custom_minimum_size = Vector2(240, 28)
 	gauge_bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	gauge_bar.show_percentage = false
 	gauge_bar.max_value = 100
@@ -123,13 +124,13 @@ func _build_top_bar(root: Control) -> void:
 	gauge_bar.add_theme_stylebox_override("background", bg)
 	hb.add_child(gauge_bar)
 	gauge_label = Label.new()
-	gauge_label.custom_minimum_size = Vector2(40, 0)
+	gauge_label.custom_minimum_size = Vector2(48, 0)
 	hb.add_child(gauge_label)
 	hiyari_label = Label.new()
-	hiyari_label.custom_minimum_size = Vector2(100, 0)
+	hiyari_label.custom_minimum_size = Vector2(124, 0)
 	hb.add_child(hiyari_label)
 	funds_label = Label.new()
-	funds_label.custom_minimum_size = Vector2(110, 0)
+	funds_label.custom_minimum_size = Vector2(136, 0)
 	hb.add_child(funds_label)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -140,7 +141,7 @@ func _build_top_bar(root: Control) -> void:
 		b.text = Tuning.SPEED_LABELS[i]
 		b.toggle_mode = true
 		b.button_group = group
-		b.custom_minimum_size = Vector2(68, 40)
+		b.custom_minimum_size = Vector2(92, 54)
 		b.focus_mode = Control.FOCUS_NONE
 		b.pressed.connect(func(): speed_selected.emit(i))
 		hb.add_child(b)
@@ -151,8 +152,8 @@ func _build_corner_buttons(root: Control) -> void:
 	# 右下: 3本線ボタン（設置メニュー）
 	menu_button = Button.new()
 	menu_button.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	menu_button.offset_left = -92
-	menu_button.offset_top = -92
+	menu_button.offset_left = -116
+	menu_button.offset_top = -116
 	menu_button.offset_right = -16
 	menu_button.offset_bottom = -16
 	menu_button.focus_mode = Control.FOCUS_NONE
@@ -161,8 +162,8 @@ func _build_corner_buttons(root: Control) -> void:
 		var line := ColorRect.new()
 		line.color = Color(0.95, 0.95, 0.95)
 		line.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		line.position = Vector2(18, 22 + k * 14)
-		line.size = Vector2(40, 5)
+		line.position = Vector2(26, 31 + k * 18)
+		line.size = Vector2(48, 7)
 		menu_button.add_child(line)
 	menu_button.pressed.connect(func(): menu_pressed.emit())
 	# 左下: 定位置に戻る
@@ -170,8 +171,8 @@ func _build_corner_buttons(root: Control) -> void:
 	home_button.text = "定位置"
 	home_button.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	home_button.offset_left = 16
-	home_button.offset_top = -72
-	home_button.offset_right = 116
+	home_button.offset_top = -88
+	home_button.offset_right = 146
 	home_button.offset_bottom = -16
 	home_button.focus_mode = Control.FOCUS_NONE
 	home_button.pressed.connect(func(): home_pressed.emit())
@@ -191,19 +192,19 @@ func _build_panel(root: Control) -> void:
 	panel.add_child(vb)
 	var title := Label.new()
 	title.text = "設置"
-	title.add_theme_font_size_override("font_size", 26)
+	title.add_theme_font_size_override("font_size", 32)
 	vb.add_child(title)
 	panel_funds = Label.new()
 	vb.add_child(panel_funds)
 	signal_item = Button.new()
-	signal_item.custom_minimum_size = Vector2(0, 72)
+	signal_item.custom_minimum_size = Vector2(0, 92)
 	signal_item.alignment = HORIZONTAL_ALIGNMENT_LEFT
 	signal_item.focus_mode = Control.FOCUS_NONE
 	signal_item.pressed.connect(func(): item_selected.emit("signal"))
 	vb.add_child(signal_item)
 	var desc := Label.new()
 	desc.text = "交差点に設置。近くの歩行者は\n横断歩道を使い、車は信号に従う。"
-	desc.add_theme_font_size_override("font_size", 15)
+	desc.add_theme_font_size_override("font_size", 19)
 	desc.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
 	vb.add_child(desc)
 	var sp := Control.new()
@@ -211,7 +212,7 @@ func _build_panel(root: Control) -> void:
 	vb.add_child(sp)
 	var close := Button.new()
 	close.text = "閉じる（再開）"
-	close.custom_minimum_size = Vector2(0, 56)
+	close.custom_minimum_size = Vector2(0, 72)
 	close.focus_mode = Control.FOCUS_NONE
 	close.pressed.connect(func(): menu_closed.emit())
 	vb.add_child(close)
@@ -219,9 +220,9 @@ func _build_panel(root: Control) -> void:
 func _build_place_bar(root: Control) -> void:
 	place_bar = PanelContainer.new()
 	place_bar.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	place_bar.offset_left = -400
-	place_bar.offset_right = 400
-	place_bar.offset_top = -150
+	place_bar.offset_left = -470
+	place_bar.offset_right = 470
+	place_bar.offset_top = -184
 	place_bar.offset_bottom = -16
 	place_bar.visible = false
 	root.add_child(place_bar)
@@ -244,23 +245,22 @@ func _build_place_bar(root: Control) -> void:
 		b.text = Tuning.SIGNAL_PRESET_LABELS[i]
 		b.toggle_mode = true
 		b.button_group = group
-		b.custom_minimum_size = Vector2(72, 48)
+		b.custom_minimum_size = Vector2(92, 62)
 		b.focus_mode = Control.FOCUS_NONE
 		b.pressed.connect(func(): preset_selected.emit(i))
 		hb.add_child(b)
 		place_presets.append(b)
 	place_presets[1].button_pressed = true
 	place_cost = Label.new()
-	place_cost.custom_minimum_size = Vector2(170, 0)
+	place_cost.custom_minimum_size = Vector2(300, 0)
 	hb.add_child(place_cost)
 	place_confirm = _small_button(hb, "確定", func(): place_confirmed.emit())
 	place_cancel = _small_button(hb, "キャンセル", func(): place_cancelled.emit())
-	place_finish = _small_button(hb, "プレイに戻る", func(): place_finished.emit())
 
 func _small_button(parent: Control, text: String, cb: Callable) -> Button:
 	var b := Button.new()
 	b.text = text
-	b.custom_minimum_size = Vector2(96, 48)
+	b.custom_minimum_size = Vector2(124, 62)
 	b.focus_mode = Control.FOCUS_NONE
 	b.pressed.connect(cb)
 	parent.add_child(b)
@@ -269,10 +269,10 @@ func _small_button(parent: Control, text: String, cb: Callable) -> Button:
 func _build_popup(root: Control) -> void:
 	popup = PanelContainer.new()
 	popup.set_anchors_preset(Control.PRESET_CENTER)
-	popup.offset_left = -220
-	popup.offset_right = 220
-	popup.offset_top = -110
-	popup.offset_bottom = 110
+	popup.offset_left = -290
+	popup.offset_right = 290
+	popup.offset_top = -130
+	popup.offset_bottom = 130
 	popup.visible = false
 	root.add_child(popup)
 	var vb := VBoxContainer.new()
@@ -280,7 +280,7 @@ func _build_popup(root: Control) -> void:
 	popup.add_child(vb)
 	var t := Label.new()
 	t.text = "信号機"
-	t.add_theme_font_size_override("font_size", 24)
+	t.add_theme_font_size_override("font_size", 30)
 	vb.add_child(t)
 	var hb := HBoxContainer.new()
 	hb.add_theme_constant_override("separation", 8)
@@ -294,7 +294,7 @@ func _build_popup(root: Control) -> void:
 		b.text = Tuning.SIGNAL_PRESET_LABELS[i]
 		b.toggle_mode = true
 		b.button_group = group
-		b.custom_minimum_size = Vector2(80, 48)
+		b.custom_minimum_size = Vector2(104, 62)
 		b.focus_mode = Control.FOCUS_NONE
 		b.pressed.connect(func(): popup_preset.emit(i))
 		hb.add_child(b)
@@ -303,7 +303,7 @@ func _build_popup(root: Control) -> void:
 	hb2.add_theme_constant_override("separation", 10)
 	vb.add_child(hb2)
 	popup_demolish_btn = _small_button(hb2, "取り壊し（+50 返金）", func(): popup_demolish.emit())
-	popup_demolish_btn.custom_minimum_size = Vector2(230, 48)
+	popup_demolish_btn.custom_minimum_size = Vector2(310, 62)
 	_small_button(hb2, "閉じる", func(): popup_closed.emit())
 
 # ---- 表示の更新 ----
@@ -337,7 +337,7 @@ func close_panel() -> void:
 	_panel_tween.tween_property(panel, "offset_right", PANEL_W, 0.2)
 	_panel_tween.chain().tween_callback(func(): panel.visible = false)
 
-## 配置バーの状態: 0=場所を選ぶ 1=仮配置中 2=確定済み
+## 配置バーの状態: 0=場所を選ぶ 1=仮配置中（確定するとそのままプレイに戻る）
 func show_place_bar(state: int, funds: int, preset: int) -> void:
 	place_bar.visible = true
 	var pending := state == 1
@@ -345,18 +345,14 @@ func show_place_bar(state: int, funds: int, preset: int) -> void:
 		b.disabled = not pending
 	place_presets[preset].button_pressed = true
 	place_confirm.visible = pending
-	place_cancel.visible = pending
-	place_finish.visible = not pending
-	match state:
-		0:
-			place_hint.text = "光っている交差点をタップして仮配置"
-			place_cost.text = ""
-		1:
-			place_hint.text = "間隔を選んで「確定」"
-			place_cost.text = "費用 %d／残り %d→%d" % [Tuning.SIGNAL_COST, funds, funds - Tuning.SIGNAL_COST]
-		2:
-			place_hint.text = "設置しました"
-			place_cost.text = "残り資金 %d" % funds
+	place_cancel.visible = true
+	place_cancel.text = "キャンセル" if pending else "やめる"
+	if pending:
+		place_hint.text = "間隔を選んで「確定」"
+		place_cost.text = "費用 %d／残り %d→%d" % [Tuning.SIGNAL_COST, funds, funds - Tuning.SIGNAL_COST]
+	else:
+		place_hint.text = "光っている交差点をタップして仮配置"
+		place_cost.text = ""
 
 func hide_place_bar() -> void:
 	place_bar.visible = false

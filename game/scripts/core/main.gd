@@ -14,7 +14,7 @@ var rig: CameraRig
 var hud: Hud
 var state := State.PLAY
 var speed_index := 1
-var place_state := 0            # 0=場所を選ぶ 1=仮配置中 2=確定済み
+var place_state := 0            # 0=場所を選ぶ 1=仮配置中（確定したらそのままプレイに戻る）
 var place_preset := 1
 var _acc := 0.0
 var _sim_ms := 0.0             # 1フレームあたりのシム処理時間（ms、平滑化）
@@ -56,7 +56,6 @@ func _ready() -> void:
 	hud.preset_selected.connect(func(i): place_preset = i)
 	hud.place_confirmed.connect(_confirm_place)
 	hud.place_cancelled.connect(_cancel_place)
-	hud.place_finished.connect(_finish_place)
 	hud.popup_preset.connect(func(i): sim.set_signal_preset(i))
 	hud.popup_demolish.connect(_demolish)
 	hud.popup_closed.connect(_close_popup)
@@ -118,8 +117,6 @@ func _on_item(item: String) -> void:
 	hud.show_place_bar(place_state, sim.funds, place_preset)
 
 func _on_place_tap(ground: Vector2) -> void:
-	if place_state == 2:
-		return
 	if WorldView.hits_intersection(ground):
 		place_state = 1
 		view.set_ghost(true)
@@ -130,16 +127,17 @@ func _confirm_place() -> void:
 	if place_state != 1:
 		return
 	if sim.place_signal(place_preset):
-		place_state = 2
-		view.set_ghost(false)
-		view.set_highlight(false)
-		hud.show_place_bar(place_state, sim.funds, place_preset)
+		_finish_place()
 
+## 仮配置の取り消し。仮配置中なら場所選びに戻り、場所選びのときは設置をやめてプレイに戻る。
 func _cancel_place() -> void:
-	place_state = 0
-	view.set_ghost(false)
-	view.set_highlight(true)
-	hud.show_place_bar(place_state, sim.funds, place_preset)
+	if place_state == 1:
+		place_state = 0
+		view.set_ghost(false)
+		view.set_highlight(true)
+		hud.show_place_bar(place_state, sim.funds, place_preset)
+	else:
+		_finish_place()
 
 func _finish_place() -> void:
 	view.set_ghost(false)
