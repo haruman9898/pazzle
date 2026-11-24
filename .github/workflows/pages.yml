@@ -1,0 +1,49 @@
+name: Web build (GitHub Pages)
+
+# Godot の Web 書き出しをビルドして GitHub Pages に公開する。
+# 事前準備（リポジトリ設定）: Settings → Pages → Build and deployment → Source を「GitHub Actions」にする。
+on:
+  push:
+    branches: [main, claude/confident-hopper-q0twii]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GODOT_DL_DIR: ${{ github.workspace }}/.godot-dl
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Godot downloads
+        uses: actions/cache@v4
+        with:
+          path: .godot-dl
+          key: godot-4.7.2-stable
+      - name: Install Godot and Web export templates
+        run: |
+          bash tools/setup_godot.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Export Web build
+        run: bash tools/build_web.sh
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

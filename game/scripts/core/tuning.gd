@@ -41,7 +41,7 @@ const CAR_DECEL_COMFORT := 4.0
 const CAR_DECEL_MAX := 9.0     # 急ブレーキの上限。歩行者はこれで止まれる車の前にだけ出る
 const CAR_LENGTH := 0.8
 const CAR_WIDTH := 0.42
-const CAR_GAP_CAR := 0.5       # 前方の車に対する停止余裕
+const CAR_GAP_CAR := 0.75      # 前方の車に対する停止余裕（車間が見える程度）
 const CAR_GAP_PED := 0.6       # 歩行者の横断線に対する停止余裕（車の中心から）
 const CAR_DETECT_R := 0.5      # 進路上の車を障害物とみなす横方向の半径
 const CAR_DETECT_R_PED := 0.45 # 横断中の歩行者の通り道（線）までの距離がこれ未満なら止まる
@@ -77,15 +77,15 @@ const SIGNAL_ALL_RED := 1.5
 const PED_RATE_BASE := 0.4
 const PED_RATE_PEAK := 4.0
 const CAR_RATE_BASE := 0.3
-const CAR_RATE_PEAK := 2.4
+const CAR_RATE_PEAK := 3.0
 const PEAK_H := 7.4
 const PEAK_W := 0.6
 
 # ---- 不満度 ----
 ## 個人不満（0〜100）の増減（1シム秒あたり）
 const D_WAIT_PED := 6.0        # 車の切れ目を待つ歩行者（危険を伴う待ち。許容時間を超えた後）
-const D_WAIT_PED_SIGNAL := 2.5 # 赤信号で待つ歩行者（秩序ある待ち。許容時間を超えた後）
-const WAIT_TOLERANCE_SIGNAL := 6.0  # 赤信号での待ちの許容時間
+const D_WAIT_PED_SIGNAL := 4.0 # 赤信号で待つ歩行者（秩序ある待ち。許容時間を超えた後）
+const WAIT_TOLERANCE_SIGNAL := 4.0  # 赤信号での待ちの許容時間
 const D_WAIT_CAR := 5.0        # 止まっている車（許容時間を超えた後）
 const WAIT_TOLERANCE := 2.0    # この秒数までの連続した待ちは不満にならない
 const D_DELAY := 3.0           # 期待所要時間 × DELAY_FACTOR を超えた後

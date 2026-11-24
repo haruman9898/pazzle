@@ -25,6 +25,8 @@
 - `docs/` — 実装側の計画・報告
 - `tools/setup_godot.sh` — Godot と Web テンプレートの導入（冪等・SHA512 検証）
 - `tools/build_web.sh` — Web 書き出し（`build/web/`）とサイズ表示
+- `tools/make_font.sh` — UI 用日本語フォントの部分抽出（Web ではシステムフォントが使えない。UI の文言を変えたら再実行）
+- `game/tests/sim_test.gd` — ヘッドレス検証（接触ゼロ・ゲージ・ヒヤリ）。ロジックを変えたら必ず実行
 - `build/` は git 管理外
 
 ## コマンド
