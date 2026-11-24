@@ -59,6 +59,7 @@ var popup_presets: Array = []
 var popup_demolish_btn: Button
 
 var _panel_tween: Tween
+var hint_pick := "光っている交差点をタップして仮配置"
 
 func _ready() -> void:
 	var root := Control.new()
@@ -396,7 +397,7 @@ func show_place_bar(state: int, funds: int, preset: int) -> void:
 		place_hint.text = "間隔を選んで「確定」"
 		place_cost.text = "費用 %d／残り %d→%d" % [Tuning.SIGNAL_COST, funds, funds - Tuning.SIGNAL_COST]
 	else:
-		place_hint.text = "光っている交差点をタップして仮配置"
+		place_hint.text = hint_pick
 		place_cost.text = ""
 
 func hide_place_bar() -> void:

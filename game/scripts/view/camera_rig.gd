@@ -6,11 +6,11 @@ extends Node3D
 const PITCH_DEG := -35.264       # 真のアイソメトリックの仰角
 const DIST := 40.0
 const HOME_YAW := 45.0
-const HOME_SIZE := 16.0
+var home_size := 16.0
 const MIN_SIZE := 6.0
-const MAX_SIZE := 30.0
+var max_size := 30.0
 const ROTATE_DEG_PER_PX := 0.35  # 回転速度（初期値・TBD）
-const PAN_LIMIT := 12.0
+var pan_limit := 12.0
 
 var cam: Camera3D
 var yaw := HOME_YAW
@@ -19,7 +19,7 @@ var _shift_tween: Tween
 func _ready() -> void:
 	cam = Camera3D.new()
 	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
-	cam.size = HOME_SIZE
+	cam.size = home_size
 	cam.near = 0.1
 	cam.far = 200.0
 	add_child(cam)
@@ -29,6 +29,14 @@ func _ready() -> void:
 
 func _apply() -> void:
 	rotation_degrees = Vector3(0, yaw, 0)
+
+## 地図の大きさに合わせる（ステージ1は広いので、遠くから見る）
+func configure(home: float, max_s: float, pan: float) -> void:
+	home_size = home
+	max_size = max_s
+	pan_limit = pan
+	if cam != null:
+		cam.size = home
 
 func rotate_by_pixels(dx: float) -> void:
 	yaw = fposmod(yaw - dx * ROTATE_DEG_PER_PX, 360.0)
@@ -47,11 +55,11 @@ func pan_by_pixels(rel: Vector2) -> void:
 	fwd = fwd.normalized()
 	var k := 1.0 / sin(deg_to_rad(-PITCH_DEG))
 	position += -right * rel.x * wpp + fwd * rel.y * wpp * k
-	position.x = clampf(position.x, -PAN_LIMIT, PAN_LIMIT)
-	position.z = clampf(position.z, -PAN_LIMIT, PAN_LIMIT)
+	position.x = clampf(position.x, -pan_limit, pan_limit)
+	position.z = clampf(position.z, -pan_limit, pan_limit)
 
 func zoom_by(factor: float) -> void:
-	cam.size = clampf(cam.size * factor, MIN_SIZE, MAX_SIZE)
+	cam.size = clampf(cam.size * factor, MIN_SIZE, max_size)
 
 func go_home() -> void:
 	var tw := create_tween().set_parallel(true).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
@@ -60,7 +68,7 @@ func go_home() -> void:
 	var diff := fposmod(target - yaw + 180.0, 360.0) - 180.0
 	tw.tween_method(func(v): yaw = v; _apply(), yaw, yaw + diff, 0.35)
 	tw.tween_property(self, "position", Vector3.ZERO, 0.35)
-	tw.tween_property(cam, "size", HOME_SIZE, 0.35)
+	tw.tween_property(cam, "size", home_size, 0.35)
 
 ## 設置パネルを開いたとき、画面を左にずらす（パネル幅 px）
 func shift_for_panel(panel_px: float) -> void:

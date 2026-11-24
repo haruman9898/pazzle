@@ -8,8 +8,11 @@ enum State { PLAY, MENU, PLACE, POPUP }
 const TAP_MAX_MOVE := 12.0      # これ以下の移動で離せばタップ
 const LONG_PRESS := 0.35        # 長押し判定（秒）。長押し後のドラッグ = 回転
 
-var sim := SimWorld.new()
-var view: WorldView
+var town := false               # ステージ1（交差点4つ）。URL に ?map=stage1 を付けると有効
+var sim                         # SimWorld（1交差点）または TownWorld（ステージ1）
+var view                        # WorldView または TownView
+var popup_id := -1              # 設備ポップアップで開いている信号
+var pending: Dictionary = {}    # 仮配置の場所
 var agents: AgentsView
 var raining := false
 var rig: CameraRig
@@ -33,7 +36,18 @@ var _t_mode := ""               # "", "pending", "pan", "rotate", "pinch"
 var _pinch_dist := 0.0
 var _rmb := false
 
+## 町の地図の立ち話の場所 [x, z, 向き, 開始時刻, 終了時刻]（建物の外の芝生の縁）
+const TOWN_CHAT := [
+	[-12.0, -10.4, 1, 6.0, 21.0], [3.0, -10.4, 1, 9.0, 17.0], [14.5, -10.4, 1, 6.5, 20.5], [-10.4, 3.0, 0, 9.5, 17.0],
+	[10.4, -3.0, 0, 17.0, 21.0], [-12.0, 10.4, 1, 9.5, 17.0], [3.0, 10.4, 1, 10.0, 16.5], [14.5, 10.4, 1, 17.5, 20.5],
+]
+
 func _ready() -> void:
+	var map_param = null
+	if OS.has_feature("web"):
+		map_param = JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('map')")
+	town = map_param != null and str(map_param) == "stage1"
+	sim = TownWorld.new() if town else SimWorld.new()
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
 	environment = e
@@ -49,7 +63,7 @@ func _ready() -> void:
 	sun.light_energy = 1.0
 	sun.shadow_enabled = true
 	add_child(sun)
-	view = WorldView.new()
+	view = TownView.new() if town else WorldView.new()
 	add_child(view)
 	view.setup(sim)
 	agents = AgentsView.new()
@@ -57,6 +71,9 @@ func _ready() -> void:
 	agents.setup(sim)
 	rig = CameraRig.new()
 	add_child(rig)
+	if town:
+		rig.configure(34.0, 46.0, 14.0)
+		agents.configure(26.0, TOWN_CHAT)
 	hud = Hud.new()
 	add_child(hud)
 	hud.speed_selected.connect(func(i): speed_index = i)
@@ -66,7 +83,9 @@ func _ready() -> void:
 	hud.preset_selected.connect(func(i): place_preset = i)
 	hud.place_confirmed.connect(_confirm_place)
 	hud.place_cancelled.connect(_cancel_place)
-	hud.popup_preset.connect(func(i): sim.set_signal_preset(i))
+	hud.popup_preset.connect(func(i): sim.set_preset(popup_id, i))
+	if town:
+		hud.hint_pick = "光っている道路をタップして仮配置"
 	hud.popup_demolish.connect(_demolish)
 	hud.popup_closed.connect(_close_popup)
 	hud.home_pressed.connect(func(): rig.go_home())
@@ -101,12 +120,12 @@ func _process(delta: float) -> void:
 	_update_debug()
 
 func _update_debug() -> void:
-	var t := "FPS %d | シム %.1fms | 車 %d / 歩行者 %d | 横断: 無断 %d / 横断歩道 %d | 上限継続 %d分%s" % [
-		Engine.get_frames_per_second(), _sim_ms, sim.cars.size(), sim.peds.size(),
+	var t := ("ステージ1 " if town else "") + "FPS %d | シム %.1fms 描画更新 %.1fms | 車 %d / 歩行者 %d | 横断: 無断 %d / 横断歩道 %d | 上限継続 %d分%s" % [
+		Engine.get_frames_per_second(), _sim_ms, agents.update_ms, sim.cars.size(), sim.peds.size(),
 		sim.cross_jay, sim.cross_walk, int(sim.over_limit_game_s / 60.0),
 		"（失敗条件に到達）" if sim.fail_reached else ""]
 	if not sim.last_loop.is_empty():
-		var l := sim.last_loop
+		var l: Dictionary = sim.last_loop
 		t += "\n前回ループ（%s）: 最大不満度 %d / ヒヤリ %d / 無断横断 %d / 横断歩道 %d" % [
 			"信号あり" if l.signal else "信号なし", int(l.max_gauge), l.hiyari, l.cross_jay, l.cross_walk]
 	t += "\n試作ループ: %d:00〜%d:00 を繰り返し（第%d回）" % [int(sim.loop_start_h), int(sim.loop_end_h), sim.loop_count + 1]
@@ -119,7 +138,7 @@ func _open_menu() -> void:
 	if state != State.PLAY:
 		return
 	state = State.MENU
-	hud.open_panel(sim.funds, not sim.signal_on and sim.funds >= Tuning.SIGNAL_COST)
+	hud.open_panel(sim.funds, sim.can_place())
 	rig.shift_for_panel(Hud.PANEL_W)
 
 func _close_menu() -> void:
@@ -140,16 +159,18 @@ func _on_item(item: String) -> void:
 	hud.show_place_bar(place_state, sim.funds, place_preset)
 
 func _on_place_tap(ground: Vector2) -> void:
-	if WorldView.hits_intersection(ground):
+	var pl: Dictionary = sim.placement_at(ground)
+	if pl.get("ok", false):
+		pending = pl
 		place_state = 1
-		view.set_ghost(true)
+		view.set_ghost(true, pl)
 		view.set_highlight(false)
 		hud.show_place_bar(place_state, sim.funds, place_preset)
 
 func _confirm_place() -> void:
 	if place_state != 1:
 		return
-	if sim.place_signal(place_preset):
+	if sim.place_signal_at(pending, place_preset):
 		_finish_place()
 
 ## 仮配置の取り消し。仮配置中なら場所選びに戻り、場所選びのときは設置をやめてプレイに戻る。
@@ -170,10 +191,10 @@ func _finish_place() -> void:
 
 func _open_popup() -> void:
 	state = State.POPUP
-	hud.show_popup(sim.signal_preset)
+	hud.show_popup(sim.preset_of(popup_id))
 
 func _demolish() -> void:
-	sim.demolish_signal()
+	sim.demolish(popup_id)
 	_close_popup()
 
 func _close_popup() -> void:
@@ -188,7 +209,8 @@ func _on_tap(screen: Vector2) -> void:
 		State.PLACE:
 			_on_place_tap(g)
 		State.PLAY:
-			if sim.signal_on and WorldView.hits_intersection(g):
+			popup_id = sim.signal_at(g)
+			if popup_id >= 0:
 				_open_popup()
 
 ## URL で開始時刻と天気を指定できる（確認・共有用）。例: ?t=12  ?t=17.5&rain=1
@@ -210,8 +232,10 @@ func _on_rain_toggled(on: bool) -> void:
 	view.set_wet(on)
 
 func _on_mode_toggled(is_24h: bool) -> void:
-	sim.loop_start_h = 0.0 if is_24h else Tuning.LOOP_START_H
-	sim.loop_end_h = 24.0 if is_24h else Tuning.LOOP_END_H
+	var s0 := Tuning.T_LOOP_START if town else Tuning.LOOP_START_H
+	var e0 := Tuning.T_LOOP_END if town else Tuning.LOOP_END_H
+	sim.loop_start_h = 0.0 if is_24h else s0
+	sim.loop_end_h = 24.0 if is_24h else e0
 	sim.reset_loop()
 
 # ---------------------------------------------------------------------

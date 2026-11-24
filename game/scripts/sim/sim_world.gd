@@ -169,6 +169,28 @@ func demolish_signal() -> void:
 	funds += int(Tuning.SIGNAL_COST * Tuning.DEMOLISH_REFUND_RATE)
 	_replan_peds()
 
+# --- main から共通で呼ぶ入口（TownWorld と同じ名前） ---
+func can_place() -> bool:
+	return not signal_on and funds >= Tuning.SIGNAL_COST
+
+func placement_at(g: Vector2) -> Dictionary:
+	return {"ok": can_place() and absf(g.x) < 3.4 and absf(g.y) < 3.4, "pos": Vector2.ZERO}
+
+func place_signal_at(_pl: Dictionary, preset: int) -> bool:
+	return place_signal(preset)
+
+func signal_at(g: Vector2) -> int:
+	return 0 if (signal_on and absf(g.x) < 3.4 and absf(g.y) < 3.4) else -1
+
+func demolish(_id: int) -> void:
+	demolish_signal()
+
+func set_preset(_id: int, preset: int) -> void:
+	set_signal_preset(preset)
+
+func preset_of(_id: int) -> int:
+	return signal_preset
+
 func set_signal_preset(preset: int) -> void:
 	signal_preset = preset
 

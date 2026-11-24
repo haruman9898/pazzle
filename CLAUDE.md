@@ -26,7 +26,9 @@
 - `tools/setup_godot.sh` — Godot と Web テンプレートの導入（冪等・SHA512 検証）
 - `tools/build_web.sh` — Web 書き出し（`build/web/`）とサイズ表示
 - `tools/make_font.sh` — UI 用日本語フォントの部分抽出（Web ではシステムフォントが使えない。UI の文言を変えたら再実行）
-- `game/tests/sim_test.gd` — ヘッドレス検証（接触ゼロ・ゲージ・ヒヤリ）。ロジックを変えたら必ず実行
+- `game/tests/sim_test.gd` — 1交差点の回帰テスト（接触ゼロ・ゲージ・ヒヤリ。基準: 信号なし87.8／普通61.0）。1交差点側のロジックを変えたら必ず実行
+- `game/tests/town_test.gd` — ステージ1の検証。`godot --headless --script res://tests/town_test.gd -- --sweep`（置く場所の総当たり）／`-- --link`（連動の比較）。ステージ1側を変えたら実行
+- ステージ1（`scripts/sim/town_map.gd`, `town_world.gd`, `scripts/view/town_view.gd`）は URL に `?map=stage1` を付けたときだけ有効。付けないと1交差点の地図
 - `build/` は git 管理外
 
 ## コマンド

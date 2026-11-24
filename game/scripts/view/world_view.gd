@@ -154,7 +154,7 @@ func _build_placement() -> void:
 func set_highlight(on: bool) -> void:
 	_highlight.visible = on
 
-func set_ghost(on: bool) -> void:
+func set_ghost(on: bool, _pl: Dictionary = {}) -> void:
 	_ghost_root.visible = on
 
 ## 交差点（信号を置ける場所）に当たっているか

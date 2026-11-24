@@ -118,3 +118,39 @@ const HEAT_FULL := 8.0         # この値で最も赤くなる
 const NIGHT_ACTIVITY := 0.2
 const EVENING_PEAK_H := 17.5
 const EVENING_PEAK_RATIO := 0.8
+
+# ---- 第3弾: ステージ1の地図（試作で置いた初期値）----
+## 建物から出る人の予定表（予報どおりに確定。毎回同じ）
+const T_SEED := 20261124
+const T_COMMUTERS_PER_HOME := 10     # 通勤者（家→オフィス。朝）
+const T_CHILDREN_PER_HOME := 22      # 児童（家→学校。朝）
+const T_SHOPPERS_PER_HOME := 3       # 買い物客（家→商店。昼）
+const T_COMMUTE_MORNING := [6.9, 9.0]
+const T_COMMUTE_EVENING := [17.0, 19.3]
+const T_SCHOOL_GO := [7.3, 8.5]
+const T_SCHOOL_BACK := [15.0, 16.5]
+const T_SHOP_GO := [9.5, 15.5]
+const T_SHOP_BACK := [11.0, 17.5]
+## 手段: 家からオフィスまでの距離（マス）で車の割合が変わる
+const T_CAR_DIST_MIN := 6.0
+const T_CAR_DIST_SPAN := 24.0
+const T_CAR_SHARE_MIN := 0.25
+const T_CAR_SHARE_MAX := 0.9
+## 通過交通（ランダム。量だけが毎ループ少し変わる）
+const T_THROUGH_CAR_BASE := 0.10
+const T_THROUGH_CAR_PEAK := 0.35
+const T_THROUGH_PED_BASE := 0.03
+const T_THROUGH_PED_PEAK := 0.08
+## 信号の連動（自動）
+const T_LINK_DIST := 20.0            # この距離（マス）以内の信号同士が、同じ道路・同じ間隔でつながる
+const T_XWALK_MIN_FROM_JUNCTION := 5.0
+const T_XWALK_MIN_GAP := 3.5
+## 車が長く止まり続けたときの救済（完全な詰まりを避ける）
+const T_BREAKER_WAIT := 20.0
+## ステージ1の試作ループ（ゲーム内時刻）。渋滞のピークがループの中に収まるよう、朝〜昼前まで
+const T_LOOP_START := 6.0
+const T_LOOP_END := 12.0
+## 連動のずれの計算: 信号から信号までの実効の速さ（停止からの発進と交差点内の減速を含む。実測で約2.3）
+const T_WAVE_SPEED := 2.3
+## 連動で優先する向き: この時間帯（朝の通勤）の車が多い向き
+const T_FAV_WINDOW := [6.5, 9.5]

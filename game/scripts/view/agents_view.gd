@@ -11,7 +11,7 @@ extends Node3D
 
 const MAX_CARS := 256
 const MAX_PEOPLE := 760
-const MAX_RAIN := 420
+const MAX_RAIN := 900
 
 const C_ANGRY := Color(0.95, 0.2, 0.15)
 const CAR_COLORS := [Color(0.45, 0.68, 0.95), Color(0.93, 0.93, 0.95), Color(0.72, 0.74, 0.8), Color(0.95, 0.8, 0.3), Color(0.45, 0.72, 0.55)]
@@ -28,11 +28,14 @@ const CHAT_SPOTS := [
 	[2.7, 6.8, 0, 10.0, 16.5], [-6.8, -2.7, 1, 9.5, 17.0], [-2.7, -6.8, 0, 17.0, 21.0], [6.8, 2.7, 1, 17.5, 20.5],
 ]
 
-var sim: SimWorld
+var sim                      # SimWorld または TownWorld
 var raining := false
 var night := 0.0
 var hour := 6.0
 
+var chat_spots: Array = CHAT_SPOTS
+var rain_extent := 14.0
+var update_ms := 0.0              # 1フレームあたりの描画更新（GDScript）の時間（平滑化）
 var _t := 0.0
 var _car_body: MultiMesh
 var _car_cabin: MultiMesh
@@ -53,7 +56,7 @@ var _ci := 0
 var _ari := 0
 var _ui := 0
 
-func setup(s: SimWorld) -> void:
+func setup(s) -> void:
 	sim = s
 	var lit := StandardMaterial3D.new()
 	lit.vertex_color_use_as_albedo = true
@@ -98,10 +101,20 @@ func setup(s: SimWorld) -> void:
 	_rain_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_rain_node.visible = false
 	add_child(_rain_node)
+	_scatter_rain()
+
+## 雨粒を、見える範囲に散らす（地図が広いときは範囲を広げる）
+func configure(extent: float, spots: Array) -> void:
+	rain_extent = extent
+	chat_spots = spots
+	_scatter_rain()
+
+func _scatter_rain() -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 4242
+	_rain_pos.clear()
 	for i in MAX_RAIN:
-		_rain_pos.append(Vector3(rng.randf_range(-14, 14), rng.randf_range(0, 10), rng.randf_range(-14, 14)))
+		_rain_pos.append(Vector3(rng.randf_range(-rain_extent, rain_extent), rng.randf_range(0, 10), rng.randf_range(-rain_extent, rain_extent)))
 
 func _mk(mesh: Mesh, count: int, mat: Material) -> MultiMesh:
 	var mm := MultiMesh.new()
@@ -130,10 +143,12 @@ func _process(delta: float) -> void:
 	if sim == null:
 		return
 	_t += delta
+	var t0 := Time.get_ticks_usec()
 	_update_cars()
 	_update_people()
 	if raining:
 		_update_rain(delta)
+	update_ms = lerpf(update_ms, (Time.get_ticks_usec() - t0) / 1000.0, 0.1)
 
 # ---------------------------------------------------------------------
 # 車: 型（セダン／ハッチバック／バン）と色が違う。夜は前が白く、後ろが赤く光る
@@ -246,8 +261,8 @@ func _fade(h: float, t0: float, t1: float) -> float:
 	return clampf((h - t0) / 0.4, 0.0, 1.0) * clampf((t1 - h) / 0.4, 0.0, 1.0)
 
 func _update_chatters() -> void:
-	for i in CHAT_SPOTS.size():
-		var sp: Array = CHAT_SPOTS[i]
+	for i in chat_spots.size():
+		var sp: Array = chat_spots[i]
 		var f := _fade(hour, sp[3], sp[4])
 		if f < 0.05 or _bi >= MAX_PEOPLE - 4:
 			continue
