@@ -59,7 +59,7 @@ func _ready() -> void:
 	_build_popup(root)
 	debug_label = Label.new()
 	debug_label.position = Vector2(12, BAR_H + 8)
-	debug_label.add_theme_font_size_override("font_size", 14)
+	debug_label.add_theme_font_size_override("font_size", 22)
 	debug_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
 	debug_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
 	debug_label.add_theme_constant_override("outline_size", 4)
