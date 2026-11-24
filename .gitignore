@@ -1,0 +1,7 @@
+# Godot
+game/.godot/
+*.import.tmp
+# Build output
+build/
+# OS
+.DS_Store
