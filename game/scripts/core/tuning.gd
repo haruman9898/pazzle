@@ -105,3 +105,16 @@ const GAUGE_SMOOTH := 1.5
 ## 敗北条件: ゲージが上限のまま ゲーム内2時間（仕様 3章・決定済み）
 const GAUGE_LIMIT := 99.5
 const FAIL_GAME_SECONDS := 7200.0
+
+# ---- 第1弾: 波の演出・熱マップ・光 ----
+## 設置の瞬間に広がる「安心の波」（ルール追加。Muse の確認待ちの暫定値）
+const WAVE_SPEED := 14.0       # 波の広がる速さ（マス/シム秒）
+const WAVE_MAX_R := 14.0
+const WAVE_RELIEF := 0.5       # 波が通った人の不満を、この割合だけ減らす
+## 渋滞の熱マップ: 待っている人がいたセルに熱がたまり、ゆっくり冷める
+const HEAT_TAU := 25.0         # 冷める速さ（シム秒）
+const HEAT_FULL := 8.0         # この値で最も赤くなる
+## 24時間表示（光の確認用）での夜間の発生量（朝6時〜21時は 1.0）
+const NIGHT_ACTIVITY := 0.2
+const EVENING_PEAK_H := 17.5
+const EVENING_PEAK_RATIO := 0.8

@@ -31,6 +31,8 @@ class Car:
 	var waiting := false
 	var wait_t := 0.0
 	var hiyari_ids := {}
+	var cause := {}        # 不満の理由ごとの加算量（累計）
+	var pulse := 0.0       # 安心の波が通った直後の演出（1→0）
 	var done := false
 
 	func length() -> float:
@@ -59,6 +61,8 @@ class Ped:
 	var wait_signal := false  # 赤信号で待っている（秩序ある待ち）
 	var blocked_t := 0.0
 	var forced := false
+	var cause := {}        # 不満の理由ごとの加算量（累計）
+	var pulse := 0.0       # 安心の波が通った直後の演出（1→0）
 	var dest_block := 0
 	var dest_arm := 0
 	var dest_t := 0.0
@@ -80,6 +84,10 @@ var forced_moves := 0         # 道路上で詰まった歩行者を強制的に
 var events: Array = []        # ヒヤリの発生位置 {pos, t}
 var last_loop := {}           # 前回ループの結果
 var loop_count := 0
+var loop_start_h := Tuning.LOOP_START_H
+var loop_end_h := Tuning.LOOP_END_H
+var heat := {}                # 渋滞の熱マップ: Vector2i -> 熱
+var waves: Array = []         # 安心の波 {r}
 var seed_base := 20261124   # 発生列の種（同じ種なら毎ループ同じ発生列）
 
 # 信号（試作では交差点に1基のみ）
@@ -106,7 +114,9 @@ func reset_loop() -> void:
 	cars.clear()
 	peds.clear()
 	events.clear()
-	clock_s = Tuning.LOOP_START_H * 3600.0
+	clock_s = loop_start_h * 3600.0
+	heat.clear()
+	waves.clear()
 	gauge = 0.0
 	max_gauge = 0.0
 	hiyari_total = 0
@@ -138,6 +148,7 @@ func place_signal(preset: int) -> bool:
 	signal_phase = 0
 	signal_t = 0.0
 	_replan_peds()
+	waves.append({"r": 0.0})
 	return true
 
 func demolish_signal() -> void:
@@ -204,12 +215,13 @@ func step(dt: float) -> void:
 	_step_cars(dt)
 	_step_peds(dt)
 	_update_discontent(dt)
+	_update_heat_and_waves(dt)
 	_cleanup()
 	# イベント表示の寿命
 	for e in events:
 		e.t += dt
 	events = events.filter(func(e): return e.t < 1.5)
-	if clock_hours() >= Tuning.LOOP_END_H:
+	if clock_hours() >= loop_end_h:
 		last_loop = {"max_gauge": max_gauge, "hiyari": hiyari_total,
 			"cross_jay": cross_jay, "cross_walk": cross_walk,
 			"signal": signal_on, "fail": fail_reached, "forced": forced_moves}
@@ -219,10 +231,23 @@ func step(dt: float) -> void:
 # =====================================================================
 # 発生（朝ピークの簡易プロファイル）
 # =====================================================================
+func _activity(h: float) -> float:
+	## 朝6時〜21時は 1.0（朝ピークのループの結果を変えない）。夜は少なくなる
+	if h >= 6.0 and h <= 21.0:
+		return 1.0
+	if h < 5.0:
+		return Tuning.NIGHT_ACTIVITY
+	if h < 6.0:
+		return lerpf(Tuning.NIGHT_ACTIVITY, 1.0, h - 5.0)
+	if h < 22.0:
+		return lerpf(1.0, Tuning.NIGHT_ACTIVITY, h - 21.0)
+	return Tuning.NIGHT_ACTIVITY
+
 func _rate(base: float, peak: float) -> float:
 	var h := clock_hours()
 	var x := (h - Tuning.PEAK_H) / Tuning.PEAK_W
-	return base + peak * exp(-x * x)
+	var x2 := (h - Tuning.EVENING_PEAK_H) / Tuning.PEAK_W
+	return base * _activity(h) + peak * (exp(-x * x) + Tuning.EVENING_PEAK_RATIO * exp(-x2 * x2))
 
 func _spawn(dt: float) -> void:
 	_ped_acc += _rate(Tuning.PED_RATE_BASE, Tuning.PED_RATE_PEAK) * dt
@@ -580,10 +605,13 @@ func _hiyari(c: Car, p) -> void:
 	hiyari_total += 1
 	c.d = minf(100.0, c.d + Tuning.D_HIYARI_CAR)
 	p.d = minf(100.0, p.d + Tuning.D_HIYARI_PED)
+	_add_cause(c, "hiyari", Tuning.D_HIYARI_CAR)
+	_add_cause(p, "hiyari", Tuning.D_HIYARI_PED)
 	events.append({"pos": p.pos, "t": 0.0})
 	for o in _near(p.pos):
 		if o != c and o != p and o.pos.distance_to(p.pos) < Tuning.HIYARI_NEARBY_R:
 			o.d = minf(100.0, o.d + Tuning.D_HIYARI_NEARBY)
+			_add_cause(o, "hiyari", Tuning.D_HIYARI_NEARBY)
 
 # =====================================================================
 # 歩行者
@@ -715,14 +743,23 @@ func _update_discontent(dt: float) -> void:
 		var tol := Tuning.WAIT_TOLERANCE_SIGNAL if sig_wait else Tuning.WAIT_TOLERANCE
 		if x.waiting and x.wait_t > tol:
 			var rate := Tuning.D_WAIT_CAR
+			var key := "jam"
 			if x.kind == KIND_PED:
 				rate = Tuning.D_WAIT_PED_SIGNAL if sig_wait else Tuning.D_WAIT_PED
+				key = "signal" if sig_wait else "jay"
+			elif signal_on and not x.entered and x.stop_target == x.s_stop and car_light(x.arm_in) != 0:
+				key = "signal"
 			dd += rate * dt
+			_add_cause(x, key, rate * dt)
 		elif not x.waiting:
 			dd -= Tuning.D_DECAY * dt
 		if x.t_alive > x.expected * Tuning.DELAY_FACTOR:
 			dd += Tuning.D_DELAY * dt
-		dd += bump.get(x, 0.0)
+			_add_cause(x, "delay", Tuning.D_DELAY * dt)
+		var b: float = bump.get(x, 0.0)
+		if b > 0.0:
+			_add_cause(x, "spread", b)
+		dd += b
 		x.d = clampf(x.d + dd, 0.0, 100.0)
 		total += x.d
 	var target := total / maxf(float(all.size()), Tuning.GAUGE_POP_FLOOR)
@@ -734,6 +771,58 @@ func _update_discontent(dt: float) -> void:
 			fail_reached = true
 	else:
 		over_limit_game_s = 0.0
+
+func _add_cause(x, key: String, v: float) -> void:
+	x.cause[key] = x.cause.get(key, 0.0) + v
+
+## 街にいる全員の、不満の理由ごとの合計（停止中の内訳表示用）
+func cause_totals() -> Dictionary:
+	var t := {}
+	for x in cars:
+		for k in x.cause:
+			t[k] = t.get(k, 0.0) + x.cause[k]
+	for x in peds:
+		for k in x.cause:
+			t[k] = t.get(k, 0.0) + x.cause[k]
+	return t
+
+func _update_heat_and_waves(dt: float) -> void:
+	# 熱マップ: 待っている人のいるセルに熱がたまり、ゆっくり冷める
+	var k := exp(-dt / Tuning.HEAT_TAU)
+	for key in heat.keys():
+		var v: float = heat[key] * k
+		if v < 0.02:
+			heat.erase(key)
+		else:
+			heat[key] = v
+	for x in cars:
+		if x.waiting:
+			var c := _cell(x.pos)
+			heat[c] = heat.get(c, 0.0) + dt * (0.5 + x.d / 100.0)
+	for x in peds:
+		if x.waiting:
+			var c := _cell(x.pos)
+			heat[c] = heat.get(c, 0.0) + dt * (0.5 + x.d / 100.0)
+	# 安心の波: 通り過ぎた人の不満を減らす
+	for w in waves:
+		var r0: float = w.r
+		var r1: float = r0 + Tuning.WAVE_SPEED * dt
+		w.r = r1
+		for x in cars:
+			var dist: float = x.pos.length()
+			if dist >= r0 and dist < r1:
+				x.d *= 1.0 - Tuning.WAVE_RELIEF
+				x.pulse = 1.0
+		for x in peds:
+			var dist: float = x.pos.length()
+			if dist >= r0 and dist < r1:
+				x.d *= 1.0 - Tuning.WAVE_RELIEF
+				x.pulse = 1.0
+	waves = waves.filter(func(w): return w.r < Tuning.WAVE_MAX_R)
+	for x in cars:
+		x.pulse = maxf(0.0, x.pulse - dt * 1.5)
+	for x in peds:
+		x.pulse = maxf(0.0, x.pulse - dt * 1.5)
 
 func _cleanup() -> void:
 	for c in cars:

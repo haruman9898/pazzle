@@ -17,6 +17,11 @@ var speed_index := 1
 var place_state := 0            # 0=場所を選ぶ 1=仮配置中（確定したらそのままプレイに戻る）
 var place_preset := 1
 var _acc := 0.0
+var environment: Environment
+var sun: DirectionalLight3D
+var _light_keys: Array = []
+var _was_stopped := false
+var picked = null               # 停止中に選んだ人
 var _sim_ms := 0.0             # 1フレームあたりのシム処理時間（ms、平滑化）
 
 # 入力
@@ -30,6 +35,7 @@ var _rmb := false
 func _ready() -> void:
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
+	environment = e
 	e.background_mode = Environment.BG_COLOR
 	e.background_color = Color(0.16, 0.18, 0.2)
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
@@ -37,7 +43,7 @@ func _ready() -> void:
 	e.ambient_light_energy = 0.35
 	env.environment = e
 	add_child(env)
-	var sun := DirectionalLight3D.new()
+	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-55, 35, 0)
 	sun.light_energy = 1.0
 	sun.shadow_enabled = true
@@ -60,6 +66,8 @@ func _ready() -> void:
 	hud.popup_demolish.connect(_demolish)
 	hud.popup_closed.connect(_close_popup)
 	hud.home_pressed.connect(func(): rig.go_home())
+	hud.mode_toggled.connect(_on_mode_toggled)
+	_build_light_keys()
 
 func _process(delta: float) -> void:
 	if state == State.PLAY:
@@ -74,6 +82,17 @@ func _process(delta: float) -> void:
 			_acc = 0.0
 		_sim_ms = lerpf(_sim_ms, (Time.get_ticks_usec() - t0) / 1000.0, 0.1)
 	hud.update_bar(sim.clock_hours(), sim.gauge, sim.hiyari_total, sim.funds)
+	var stopped := state == State.MENU or state == State.PLACE
+	if stopped != _was_stopped:
+		_was_stopped = stopped
+		view.set_heat_visible(stopped)
+		picked = null
+		view.selected = null
+		if stopped:
+			hud.show_info(sim.cause_totals(), {}, state == State.MENU)
+		else:
+			hud.hide_info()
+	_apply_light(sim.clock_hours())
 	hud.set_paused(state != State.PLAY)
 	_update_debug()
 
@@ -86,7 +105,7 @@ func _update_debug() -> void:
 		var l := sim.last_loop
 		t += "\n前回ループ（%s）: 最大不満度 %d / ヒヤリ %d / 無断横断 %d / 横断歩道 %d" % [
 			"信号あり" if l.signal else "信号なし", int(l.max_gauge), l.hiyari, l.cross_jay, l.cross_walk]
-	t += "\n試作ループ: %d:00〜%d:00 を繰り返し（第%d回）" % [int(Tuning.LOOP_START_H), int(Tuning.LOOP_END_H), sim.loop_count + 1]
+	t += "\n試作ループ: %d:00〜%d:00 を繰り返し（第%d回）" % [int(sim.loop_start_h), int(sim.loop_end_h), sim.loop_count + 1]
 	hud.debug_label.text = t
 
 # ---------------------------------------------------------------------
@@ -110,6 +129,9 @@ func _on_item(item: String) -> void:
 	hud.close_panel()
 	rig.shift_for_panel(0.0)
 	state = State.PLACE
+	hud.show_info(sim.cause_totals(), {}, false)
+	picked = null
+	view.selected = null
 	place_state = 0
 	place_preset = 1
 	view.set_highlight(true)
@@ -161,12 +183,76 @@ func _on_tap(screen: Vector2) -> void:
 	var g = rig.screen_to_ground(screen)
 	if g == null:
 		return
+	# 設置パネルを開いている間は、人をタップするとその人の不満の理由を表示する
+	# （配置中は、交差点のタップを配置に使うため、人の選択は行わない）
+	if state == State.MENU:
+		var a = _pick_agent(g)
+		if a != null:
+			picked = a
+			view.selected = a
+			hud.show_info(sim.cause_totals(), {"name": "車" if a.kind == SimWorld.KIND_CAR else "歩行者", "d": a.d, "cause": a.cause})
+			return
 	match state:
 		State.PLACE:
 			_on_place_tap(g)
 		State.PLAY:
 			if sim.signal_on and WorldView.hits_intersection(g):
 				_open_popup()
+
+func _pick_agent(g: Vector2):
+	var best = null
+	var bd := 0.75
+	for c in sim.cars:
+		var d: float = c.pos.distance_to(g)
+		if d < bd:
+			bd = d
+			best = c
+	for p in sim.peds:
+		var d: float = p.pos.distance_to(g) - 0.15   # 歩行者は小さいので少し選びやすくする
+		if d < bd:
+			bd = d
+			best = p
+	return best
+
+func _on_mode_toggled(is_24h: bool) -> void:
+	sim.loop_start_h = 0.0 if is_24h else Tuning.LOOP_START_H
+	sim.loop_end_h = 24.0 if is_24h else Tuning.LOOP_END_H
+	sim.reset_loop()
+
+# ---------------------------------------------------------------------
+# 時間帯による光の変化（朝＝柔らかい／昼＝明るい／夕＝オレンジ／夜＝月明かりと街灯）
+# ---------------------------------------------------------------------
+func _build_light_keys() -> void:
+	# [時刻, 太陽の仰角, 向き, 太陽の色, 強さ, 環境光の色, 環境光の強さ, 背景色]
+	var night := [Color(0.45, 0.55, 0.9), 0.3, Color(0.3, 0.36, 0.6), 0.65, Color(0.06, 0.08, 0.17)]
+	_light_keys = [
+		[0.0, -35.0, -60.0] + night,
+		[5.0, -35.0, -60.0] + night,
+		[6.0, -9.0, 105.0, Color(1.0, 0.62, 0.4), 0.55, Color(0.55, 0.5, 0.6), 0.45, Color(0.42, 0.38, 0.5)],
+		[7.5, -28.0, 95.0, Color(1.0, 0.85, 0.7), 0.85, Color(0.7, 0.7, 0.78), 0.4, Color(0.5, 0.58, 0.72)],
+		[12.0, -68.0, 20.0, Color(1.0, 0.98, 0.95), 1.1, Color(0.75, 0.78, 0.85), 0.4, Color(0.45, 0.62, 0.85)],
+		[16.0, -38.0, -50.0, Color(1.0, 0.92, 0.8), 1.0, Color(0.72, 0.72, 0.8), 0.4, Color(0.5, 0.62, 0.8)],
+		[17.5, -10.0, -85.0, Color(1.0, 0.55, 0.3), 0.8, Color(0.65, 0.5, 0.5), 0.4, Color(0.6, 0.4, 0.35)],
+		[18.5, -5.0, -80.0, Color(0.8, 0.4, 0.45), 0.4, Color(0.4, 0.35, 0.5), 0.4, Color(0.25, 0.2, 0.35)],
+		[20.0, -35.0, -60.0] + night,
+		[24.0, -35.0, -60.0] + night,
+	]
+
+func _apply_light(h: float) -> void:
+	var i := 0
+	while i < _light_keys.size() - 2 and h >= _light_keys[i + 1][0]:
+		i += 1
+	var a: Array = _light_keys[i]
+	var b: Array = _light_keys[i + 1]
+	var t := clampf((h - a[0]) / maxf(b[0] - a[0], 0.0001), 0.0, 1.0)
+	sun.rotation_degrees = Vector3(lerpf(a[1], b[1], t), lerpf(a[2], b[2], t), 0.0)
+	sun.light_color = (a[3] as Color).lerp(b[3], t)
+	var energy := lerpf(a[4], b[4], t)
+	sun.light_energy = energy
+	environment.ambient_light_color = (a[5] as Color).lerp(b[5], t)
+	environment.ambient_light_energy = lerpf(a[6], b[6], t)
+	environment.background_color = (a[7] as Color).lerp(b[7], t)
+	view.set_night(1.0 - clampf((energy - 0.3) / 0.5, 0.0, 1.0))
 
 # ---------------------------------------------------------------------
 # 入力: 1本指ドラッグ = 移動 / 1本指長押し→ドラッグ = 回転 / 2本指 = ズーム

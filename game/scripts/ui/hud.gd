@@ -15,6 +15,7 @@ signal popup_preset(index: int)
 signal popup_demolish
 signal popup_closed
 signal home_pressed
+signal mode_toggled(is_24h: bool)
 
 const PANEL_W := 390.0
 const BAR_H := 68.0
@@ -29,6 +30,19 @@ var debug_label: Label
 var paused_label: Label
 var menu_button: Button
 var home_button: Button
+var mode_button: Button
+var info_card: PanelContainer
+var info_box: VBoxContainer
+
+## 不満の理由: [キー, 表示名, 色]
+const CAUSES := [
+	["jay", "横断待ち", Color(0.98, 0.6, 0.2)],
+	["signal", "信号待ち", Color(0.35, 0.65, 1.0)],
+	["jam", "渋滞", Color(0.95, 0.25, 0.25)],
+	["delay", "遅れ", Color(0.7, 0.45, 0.95)],
+	["hiyari", "ヒヤリ", Color(1.0, 0.9, 0.2)],
+	["spread", "周りの不満", Color(0.65, 0.65, 0.7)],
+]
 var panel: PanelContainer
 var panel_funds: Label
 var signal_item: Button
@@ -55,6 +69,7 @@ func _ready() -> void:
 	_build_panel(root)
 	_build_place_bar(root)
 	_build_popup(root)
+	_build_info_card(root)
 	debug_label = Label.new()
 	debug_label.position = Vector2(12, BAR_H + 8)
 	debug_label.add_theme_font_size_override("font_size", 22)
@@ -177,6 +192,20 @@ func _build_corner_buttons(root: Control) -> void:
 	home_button.focus_mode = Control.FOCUS_NONE
 	home_button.pressed.connect(func(): home_pressed.emit())
 	root.add_child(home_button)
+	# 光の確認用: 朝ピークだけ ⇔ 24時間
+	mode_button = Button.new()
+	mode_button.text = "朝ピーク"
+	mode_button.toggle_mode = true
+	mode_button.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	mode_button.offset_left = 160
+	mode_button.offset_top = -88
+	mode_button.offset_right = 330
+	mode_button.offset_bottom = -16
+	mode_button.focus_mode = Control.FOCUS_NONE
+	mode_button.toggled.connect(func(on):
+		mode_button.text = "24時間" if on else "朝ピーク"
+		mode_toggled.emit(on))
+	root.add_child(mode_button)
 
 func _build_panel(root: Control) -> void:
 	panel = PanelContainer.new()
@@ -368,3 +397,108 @@ func hide_popup() -> void:
 func set_paused(on: bool) -> void:
 	paused_label.visible = on
 	menu_button.visible = not on
+
+
+# ---------------------------------------------------------------------
+# 停止中だけ表示する情報カード（不満の内訳・選んだ人の理由）
+# ---------------------------------------------------------------------
+func _build_info_card(root: Control) -> void:
+	info_card = PanelContainer.new()
+	info_card.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	info_card.offset_left = 12
+	info_card.offset_top = BAR_H + 128
+	info_card.offset_right = 340
+	info_card.visible = false
+	info_card.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(info_card)
+	info_box = VBoxContainer.new()
+	info_box.add_theme_constant_override("separation", 8)
+	info_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	info_card.add_child(info_box)
+
+func _cause_def(key: String) -> Array:
+	for c in CAUSES:
+		if c[0] == key:
+			return c
+	return [key, key, Color.GRAY]
+
+func _lbl(text: String, size := 20, color := Color(1, 1, 1)) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", size)
+	l.add_theme_color_override("font_color", color)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l
+
+## totals: 街全体の理由ごとの合計 / picked: 選んだ人 {name, d, cause}（空なら表示しない）
+func show_info(totals: Dictionary, picked: Dictionary, can_pick := true) -> void:
+	for c in info_box.get_children():
+		c.queue_free()
+	info_box.add_child(_lbl("いまの不満の内訳", 22))
+	var sum := 0.0
+	for k in totals:
+		sum += totals[k]
+	if sum < 0.01:
+		info_box.add_child(_lbl("まだ不満はたまっていません", 18, Color(0.8, 0.8, 0.8)))
+	else:
+		var bar := HBoxContainer.new()
+		bar.add_theme_constant_override("separation", 0)
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		for c in CAUSES:
+			var v: float = totals.get(c[0], 0.0)
+			if v <= 0.0:
+				continue
+			var r := ColorRect.new()
+			r.color = c[2]
+			r.custom_minimum_size = Vector2(0, 22)
+			r.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			r.size_flags_stretch_ratio = maxf(v / sum * 100.0, 1.0)
+			r.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			bar.add_child(r)
+		info_box.add_child(bar)
+		for c in CAUSES:
+			var v: float = totals.get(c[0], 0.0)
+			if v / sum < 0.08:
+				continue
+			info_box.add_child(_legend_row(c[1], c[2], v / sum, "%d%%" % int(round(v / sum * 100.0))))
+	info_box.add_child(_lbl("赤い地面 = 待ちがたまっている", 16, Color(1.0, 0.7, 0.6)))
+	if picked.is_empty():
+		if can_pick:
+			info_box.add_child(_lbl("人をタップすると理由が見られます", 16, Color(0.8, 0.8, 0.8)))
+	else:
+		info_box.add_child(HSeparator.new())
+		info_box.add_child(_lbl("%s　不満 %d" % [picked.name, int(round(picked.d))], 22, Color(1.0, 0.9, 0.3)))
+		var cs: Dictionary = picked.cause
+		var psum := 0.0
+		for k in cs:
+			psum += cs[k]
+		if psum < 0.01:
+			info_box.add_child(_lbl("この人は、いまのところ不満なし", 18, Color(0.8, 0.8, 0.8)))
+		else:
+			var keys := cs.keys()
+			keys.sort_custom(func(a, b): return cs[a] > cs[b])
+			for k in keys.slice(0, 3):
+				var cd := _cause_def(k)
+				info_box.add_child(_legend_row(cd[1], cd[2], cs[k] / psum, "%d%%" % int(round(cs[k] / psum * 100.0))))
+	info_card.visible = true
+
+func _legend_row(name: String, color: Color, frac: float, value: String) -> Control:
+	var hb := HBoxContainer.new()
+	hb.add_theme_constant_override("separation", 8)
+	hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sw := ColorRect.new()
+	sw.color = color
+	sw.custom_minimum_size = Vector2(maxf(frac * 120.0, 8.0), 18)
+	sw.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	sw.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb.add_child(sw)
+	hb.add_child(_lbl(name, 19))
+	var sp := Control.new()
+	sp.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hb.add_child(sp)
+	hb.add_child(_lbl(value, 19, Color(0.85, 0.85, 0.85)))
+	return hb
+
+func hide_info() -> void:
+	info_card.visible = false

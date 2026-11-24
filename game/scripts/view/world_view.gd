@@ -25,6 +25,14 @@ var _signal_root: Node3D
 var _ghost_root: Node3D
 var _highlight: MeshInstance3D
 var _highlight_mat: StandardMaterial3D
+var selected = null      # 停止中に選ばれた人（車 or 歩行者）
+var _heat_mm: MultiMesh
+var _heat_node: MultiMeshInstance3D
+var _wave_ring: MeshInstance3D
+var _wave_mat: StandardMaterial3D
+var _sel_ring: MeshInstance3D
+var _lamp_mats: Array = []
+var _pool_mat: StandardMaterial3D
 var _car_lamps := {}   # arm -> StandardMaterial3D
 var _ped_lamps := {}   # arm -> StandardMaterial3D
 var _t := 0.0
@@ -35,6 +43,7 @@ func setup(s: SimWorld) -> void:
 	_build_dynamic()
 	_build_signal()
 	_build_placement()
+	_build_extras()
 
 # ---------------------------------------------------------------------
 func _mat(color: Color, alpha := 1.0, unshaded := false) -> StandardMaterial3D:
@@ -118,6 +127,9 @@ func _make_mm(mesh: BoxMesh, size: Vector3, count: int) -> MultiMesh:
 	mi.multimesh = mm
 	var m := StandardMaterial3D.new()
 	m.vertex_color_use_as_albedo = true
+	m.emission_enabled = true
+	m.emission = Color(1, 1, 1)
+	m.emission_energy_multiplier = 0.18   # 夜でも車と人が見えるように、わずかに自発光させる
 	mi.material_override = m
 	add_child(mi)
 	return mm
@@ -175,6 +187,125 @@ static func hits_intersection(p: Vector2) -> bool:
 	return absf(p.x) < 3.4 and absf(p.y) < 3.4
 
 # ---------------------------------------------------------------------
+# 第1弾: 熱マップ・安心の波・選択リング・街灯
+# ---------------------------------------------------------------------
+const MAX_HEAT := 700
+
+func _build_extras() -> void:
+	# 熱マップ（停止中のみ表示）
+	var quad := BoxMesh.new()
+	quad.size = Vector3(0.96, 0.02, 0.96)
+	_heat_mm = MultiMesh.new()
+	_heat_mm.transform_format = MultiMesh.TRANSFORM_3D
+	_heat_mm.use_colors = true
+	_heat_mm.mesh = quad
+	_heat_mm.instance_count = MAX_HEAT
+	_heat_mm.visible_instance_count = 0
+	_heat_node = MultiMeshInstance3D.new()
+	_heat_node.multimesh = _heat_mm
+	var hm := _mat(Color.WHITE, 0.6, true)
+	hm.vertex_color_use_as_albedo = true
+	_heat_node.material_override = hm
+	_heat_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_heat_node.visible = false
+	add_child(_heat_node)
+	# 安心の波
+	var tm := TorusMesh.new()
+	tm.inner_radius = 0.9
+	tm.outer_radius = 1.0
+	tm.rings = 48
+	tm.ring_segments = 6
+	_wave_ring = MeshInstance3D.new()
+	_wave_ring.mesh = tm
+	_wave_mat = _mat(Color(0.75, 1.0, 0.8), 0.9, true)
+	_wave_ring.material_override = _wave_mat
+	_wave_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_wave_ring.visible = false
+	add_child(_wave_ring)
+	# 選ばれた人のリング
+	var sm := TorusMesh.new()
+	sm.inner_radius = 0.36
+	sm.outer_radius = 0.46
+	sm.rings = 24
+	sm.ring_segments = 6
+	_sel_ring = MeshInstance3D.new()
+	_sel_ring.mesh = sm
+	_sel_ring.material_override = _mat(Color(1.0, 0.9, 0.2), 1.0, true)
+	_sel_ring.scale = Vector3(1, 0.3, 1)
+	_sel_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_sel_ring.visible = false
+	add_child(_sel_ring)
+	# 街灯（夜に灯る）
+	_pool_mat = _mat(Color(1.0, 0.78, 0.4), 0.0, true)
+	_pool_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var pool_mesh := CylinderMesh.new()
+	pool_mesh.top_radius = 1.9
+	pool_mesh.bottom_radius = 1.9
+	pool_mesh.height = 0.01
+	var pole := _mat(Color(0.28, 0.28, 0.3))
+	for b in 4:
+		var sg: Vector2 = Geo.BLOCKS[b]
+		for p in [Vector2(1.95, 6.0), Vector2(6.0, 1.95)]:
+			var pos := Vector2(sg.x * p.x, sg.y * p.y)
+			_box(self, Vector3(0.07, 1.5, 0.07), pos, 0.0, pole)
+			var lm := StandardMaterial3D.new()
+			lm.albedo_color = Color(1.0, 0.92, 0.7)
+			lm.emission_enabled = true
+			lm.emission = Color(1.0, 0.85, 0.5)
+			lm.emission_energy_multiplier = 0.1
+			var head := MeshInstance3D.new()
+			var sph := SphereMesh.new()
+			sph.radius = 0.14
+			sph.height = 0.28
+			head.mesh = sph
+			head.material_override = lm
+			head.position = Vector3(pos.x, 1.55, pos.y)
+			head.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(head)
+			_lamp_mats.append(lm)
+			var pool := MeshInstance3D.new()
+			pool.mesh = pool_mesh
+			pool.material_override = _pool_mat
+			pool.position = Vector3(pos.x, 0.09, pos.y)
+			pool.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(pool)
+
+func set_heat_visible(on: bool) -> void:
+	_heat_node.visible = on
+
+## 夜の明るさ（0=昼, 1=夜）。街灯の光り方を変える
+func set_night(f: float) -> void:
+	for m in _lamp_mats:
+		m.emission_energy_multiplier = 0.1 + 3.0 * f
+	_pool_mat.albedo_color.a = 0.16 * f
+
+func _update_extras() -> void:
+	if _heat_node.visible:
+		var n := 0
+		for key in sim.heat:
+			var v: float = sim.heat[key]
+			if v < 0.4 or n >= MAX_HEAT:
+				continue
+			var t := clampf(v / Tuning.HEAT_FULL, 0.0, 1.0)
+			_heat_mm.set_instance_transform(n, Transform3D(Basis(), Vector3(key.x + 0.5, 0.08, key.y + 0.5)))
+			_heat_mm.set_instance_color(n, Color(1.0, 0.85, 0.1, 0.30).lerp(Color(0.95, 0.1, 0.05, 0.80), t))
+			n += 1
+		_heat_mm.visible_instance_count = n
+	if sim.waves.size() > 0:
+		var r: float = sim.waves[0].r
+		_wave_ring.visible = true
+		_wave_ring.scale = Vector3(maxf(r, 0.1), 0.25, maxf(r, 0.1))
+		_wave_ring.position = Vector3(0, 0.12, 0)
+		_wave_mat.albedo_color.a = clampf(1.0 - r / Tuning.WAVE_MAX_R, 0.0, 0.9)
+	else:
+		_wave_ring.visible = false
+	if selected != null and not selected.done:
+		_sel_ring.visible = true
+		_sel_ring.position = Vector3(selected.pos.x, 0.1, selected.pos.y)
+	else:
+		_sel_ring.visible = false
+
+# ---------------------------------------------------------------------
 func _process(delta: float) -> void:
 	if sim == null:
 		return
@@ -182,6 +313,7 @@ func _process(delta: float) -> void:
 	if _highlight.visible:
 		_highlight_mat.albedo_color.a = 0.25 + 0.2 * sin(_t * 5.0)
 	_update_agents()
+	_update_extras()
 	_update_signal()
 	_update_events()
 
@@ -191,15 +323,17 @@ func _update_agents() -> void:
 	for i in n:
 		var c = sim.cars[i]
 		var ang := atan2(-c.dir.y, c.dir.x)
-		var t := Transform3D(Basis(Vector3.UP, ang), Vector3(c.pos.x, 0.2, c.pos.y))
+		var sc: float = 1.0 + 0.5 * c.pulse
+		var t := Transform3D(Basis(Vector3.UP, ang).scaled(Vector3(sc, sc, sc)), Vector3(c.pos.x, 0.2 * sc, c.pos.y))
 		_car_mm.set_instance_transform(i, t)
-		_car_mm.set_instance_color(i, C_CAR.lerp(C_ANGRY, c.d / 100.0))
+		_car_mm.set_instance_color(i, C_CAR.lerp(C_ANGRY, c.d / 100.0).lerp(Color.WHITE, c.pulse * 0.6))
 	var m := mini(sim.peds.size(), MAX_PEDS)
 	_ped_mm.visible_instance_count = m
 	for i in m:
 		var p = sim.peds[i]
-		_ped_mm.set_instance_transform(i, Transform3D(Basis(), Vector3(p.pos.x, 0.275, p.pos.y)))
-		_ped_mm.set_instance_color(i, C_PED.lerp(C_ANGRY, p.d / 100.0))
+		var ps: float = 1.0 + 0.6 * p.pulse
+		_ped_mm.set_instance_transform(i, Transform3D(Basis().scaled(Vector3(ps, ps, ps)), Vector3(p.pos.x, 0.275 * ps, p.pos.y)))
+		_ped_mm.set_instance_color(i, C_PED.lerp(C_ANGRY, p.d / 100.0).lerp(Color.WHITE, p.pulse * 0.6))
 
 func _update_signal() -> void:
 	_signal_root.visible = sim.signal_on
