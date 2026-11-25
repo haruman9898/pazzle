@@ -1490,7 +1490,8 @@ func _update_bubbles(rdt: float) -> void:
 		bubble_stats.spawned += 1
 
 func _bubble_eligible(x) -> bool:
-	return x.waiting and not x.has_bubble and x.wait_t > Tuning.T_BUBBLE_WAIT and sig_clock >= x.bubble_ready_at
+	# 赤信号で待つ人（秩序ある待ち）からは出さない。バブルは「困っている場所」の目印
+	return x.waiting and not x.has_bubble and not _orderly_wait(x) and x.wait_t > Tuning.T_BUBBLE_WAIT and sig_clock >= x.bubble_ready_at
 
 func _end_bubble(b: Dictionary, collected: bool) -> void:
 	b.agent.has_bubble = false

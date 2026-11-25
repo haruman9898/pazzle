@@ -30,8 +30,14 @@ func run_day(policy: Callable, seed := Tuning.T_SEED, preset := 1) -> Dictionary
 	w.auto_loop = false
 	w.reset_loop()
 	var winmax := {}
+	var winsum := {}
+	var wincnt := {}
+	var win95 := {}
 	for k in WINDOWS:
 		winmax[k] = 0.0
+		winsum[k] = 0.0
+		wincnt[k] = 0
+		win95[k] = 0
 	var contacts := 0
 	var steps := 0
 	var traj: Array = []
@@ -50,7 +56,16 @@ func run_day(policy: Callable, seed := Tuning.T_SEED, preset := 1) -> Dictionary
 		for k in WINDOWS:
 			if h >= WINDOWS[k][0] and h < WINDOWS[k][1]:
 				winmax[k] = maxf(winmax[k], w.gauge)
-	var r := {"win": winmax, "fail": w.fail_reached, "fail_h": w.fail_clock, "contacts": contacts,
+				winsum[k] += w.gauge
+				wincnt[k] += 1
+				if w.gauge >= Tuning.T_GAUGE_LIMIT:
+					win95[k] += 1
+	var winmean := {}
+	var winmin95 := {}
+	for k in WINDOWS:
+		winmean[k] = winsum[k] / maxf(wincnt[k], 1)
+		winmin95[k] = win95[k] * Tuning.SIM_DT * Tuning.CLOCK_RATE / 60.0     # ゲーム内の分
+	var r := {"win": winmax, "mean": winmean, "m95": winmin95, "fail": w.fail_reached, "fail_h": w.fail_clock, "contacts": contacts,
 		"max_stop": w.max_stop_s, "hiyari": w.hiyari_total, "trips": w.trips_done, "funds": w.funds,
 		"bub": w.bubble_stats.duplicate(), "decisions": w.decisions, "ms": float(Time.get_ticks_msec() - t0) / steps,
 		"income": w.income_log.duplicate(), "traj": traj}
@@ -105,7 +120,10 @@ func _init() -> void:
 		keys["交差点0 長い"] = w1.placement_at(TownMap.junction_center(0))
 		for name in keys:
 			var tot := {"朝": 0.0, "昼": 0.0, "夕": 0.0, "夜": 0.0}
+			var mean := {"朝": 0.0, "昼": 0.0, "夕": 0.0, "夜": 0.0}
+			var m95 := {"朝": 0.0, "昼": 0.0, "夕": 0.0, "夜": 0.0}
 			var fails := 0
+			var pts := 0
 			for sd in SEEDS:
 				var pl = keys[name]
 				var pv := 0 if name.ends_with("短い") else (2 if name.ends_with("長い") else 1)
@@ -116,9 +134,16 @@ func _init() -> void:
 				var r := run_day(pol, sd)
 				for k in tot:
 					tot[k] += r.win[k]
+					mean[k] += r.mean[k]
+					m95[k] += r.m95[k]
+				pts += r.funds
 				if r.fail:
 					fails += 1
-			print("[%s] 朝%d 昼%d 夕%d 夜%d 失敗%d/%d" % [name, tot["朝"] / SEEDS.size(), tot["昼"] / SEEDS.size(), tot["夕"] / SEEDS.size(), tot["夜"] / SEEDS.size(), fails, SEEDS.size()])
+			var n := float(SEEDS.size())
+			var line := "[%s]" % name
+			for k in tot:
+				line += " %s:平均%d/最大%d/上限%d分" % [k, mean[k] / n, tot[k] / n, m95[k] / n]
+			print("%s 失敗%d/%d 終了時ポイント%d" % [line, fails, SEEDS.size(), pts / SEEDS.size()])
 	if "--play" in args:
 		# 疑似プレイヤー: 開発ポイントが100たまるたびに、優先順位の順に信号を置く（間隔は「短い」）
 		var w2 := TownWorld.new()
@@ -141,7 +166,7 @@ func _init() -> void:
 							times.append("%.1f" % w.clock_hours())
 							w.waves.clear()
 				var r := run_day(pol, sd)
-				show("%s 種%d 置いた時刻=%s" % [name, sd, ",".join(times)], r)
+				show("%s 種%d 置いた時刻=%s 決定=%d" % [name, sd, ",".join(times), r.decisions], r)
 	if "--sweep" in args:
 		var w0 := TownWorld.new()
 		var cands := candidates(w0)

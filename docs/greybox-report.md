@@ -234,5 +234,5 @@
 ステージ1（交差点4つ）を追加しました（`?map=stage1`）。詳細と数値は `docs/roadmap.md`。
 
 - 1交差点の地図は、そのまま残しています。回帰テスト（`game/tests/sim_test.gd`）の結果は、第3弾の前後で同じです（信号なし87.8、普通61.0、接触0）。
-- ステージ1のテストは `game/tests/town_test.gd`（`-- --sweep` で、置く場所を全部試す。`-- --link` で連動の比較）と `game/tests/town_wave_test.gd`（連動の仕組みの確認）です。
+- ステージ1のテストは `game/tests/stage1_test.gd` に統合しました（旧 `town_test.gd` と `town_wave_test.gd` は削除。連動の仕組みの確認は第3弾のときに実施済みで、結果は `docs/roadmap.md` にあります）。
 - 追加した初期値は `tuning.gd` の末尾（`T_` で始まるもの）。

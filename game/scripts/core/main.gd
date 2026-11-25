@@ -194,7 +194,10 @@ func _update_debug() -> void:
 		var l: Dictionary = sim.last_loop
 		t += "\n前回ループ（%s）: 最大不満度 %d / ヒヤリ %d / 無断横断 %d / 横断歩道 %d" % [
 			"信号あり" if l.signal else "信号なし", int(l.max_gauge), l.hiyari, l.cross_jay, l.cross_walk]
-	t += "\n試作ループ: %d:00〜%d:00 を繰り返し（第%d回）" % [int(sim.loop_start_h), int(sim.loop_end_h), sim.loop_count + 1]
+	if town:
+		t += "\n1日: 6:00〜翌6:00　/　決定 %d 回　/　バブル 出%d 回収%d 逃%d" % [sim.decisions, sim.bubble_stats.spawned, sim.bubble_stats.collected, sim.bubble_stats.missed]
+	else:
+		t += "\n試作ループ: %d:00〜%d:00 を繰り返し（第%d回）" % [int(sim.loop_start_h), int(sim.loop_end_h), sim.loop_count + 1]
 	hud.debug_label.text = t
 
 # ---------------------------------------------------------------------
