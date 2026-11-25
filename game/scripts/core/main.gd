@@ -12,6 +12,10 @@ var town := true                # ステージ1（交差点4つ）。URL に ?ma
 var debug := false              # URL に ?debug=1 を付けると、確認用のボタン（24時間・雨）を出す
 var sim                         # SimWorld（1交差点）または TownWorld（ステージ1）
 var view                        # WorldView または TownView
+var sfx: Sfx
+var place_item := "signal"      # 置こうとしている手段: "signal" / "guard"
+var _combo := 0                 # バブルの連鎖（2.5秒以内に続けて弾いた数）
+var _combo_t := 99.0
 var popup_id := -1              # 設備ポップアップで開いている信号
 var pending: Dictionary = {}    # 仮配置の場所
 var agents: AgentsView
@@ -54,6 +58,7 @@ func _ready() -> void:
 	sim = TownWorld.new() if town else SimWorld.new()
 	if town:
 		sim.auto_loop = false
+		sim.auto_collect = false       # バブルは、人がタップして弾く（暫定の自動回収は、試験用に残す）
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
 	environment = e
@@ -96,15 +101,23 @@ func _ready() -> void:
 	hud.popup_closed.connect(_close_popup)
 	hud.home_pressed.connect(func(): rig.go_home())
 	hud.result_pressed.connect(_retry)
+	sfx = Sfx.new()
+	add_child(sfx)
+	hud.mute_toggled.connect(func(m): sfx.set_muted(m))
 	hud.mode_button.visible = debug
 	hud.rain_button.visible = debug
-	hud.auto_note.visible = town
+	hud.auto_note.visible = false
+	hud.guard_item.visible = town
+	hud.guard_desc.visible = town
 	hud.mode_toggled.connect(_on_mode_toggled)
 	hud.rain_toggled.connect(_on_rain_toggled)
 	_build_light_keys()
 	_read_url_params()
 
 func _process(delta: float) -> void:
+	_combo_t += delta
+	if _combo_t > 2.5 and _combo > 0:
+		_combo = 0
 	if state == State.PLAY and town and (sim.fail_reached or sim.day_over):
 		_show_result()
 	if state == State.PLAY:
@@ -207,7 +220,7 @@ func _open_menu() -> void:
 	if state != State.PLAY:
 		return
 	state = State.MENU
-	hud.open_panel(sim.funds, sim.can_place())
+	hud.open_panel(sim.funds, sim.can_place(), town and sim.can_place_guard())
 	rig.shift_for_panel(Hud.PANEL_W)
 
 func _close_menu() -> void:
@@ -216,8 +229,9 @@ func _close_menu() -> void:
 	state = State.PLAY
 
 func _on_item(item: String) -> void:
-	if item != "signal":
+	if item != "signal" and item != "guard":
 		return
+	place_item = item
 	hud.close_panel()
 	rig.shift_for_panel(0.0)
 	state = State.PLACE
@@ -225,21 +239,27 @@ func _on_item(item: String) -> void:
 	place_preset = 1
 	view.set_highlight(true)
 	view.set_ghost(false)
-	hud.show_place_bar(place_state, sim.funds, place_preset)
+	_bar()
+
+## 配置バーの表示（手段によって、費用と、間隔の選択の有無が変わる）
+func _bar() -> void:
+	var guard := place_item == "guard"
+	hud.show_place_bar(place_state, sim.funds, place_preset, Tuning.GUARD_COST if guard else Tuning.SIGNAL_COST, not guard)
 
 func _on_place_tap(ground: Vector2) -> void:
-	var pl: Dictionary = sim.placement_at(ground)
+	var pl: Dictionary = sim.placement_at(ground, place_item == "guard")
 	if pl.get("ok", false):
 		pending = pl
 		place_state = 1
 		view.set_ghost(true, pl)
 		view.set_highlight(false)
-		hud.show_place_bar(place_state, sim.funds, place_preset)
+		_bar()
 
 func _confirm_place() -> void:
 	if place_state != 1:
 		return
 	if sim.place_signal_at(pending, place_preset):
+		sfx.place()
 		_finish_place()
 
 ## 仮配置の取り消し。仮配置中なら場所選びに戻り、場所選びのときは設置をやめてプレイに戻る。
@@ -248,7 +268,7 @@ func _cancel_place() -> void:
 		place_state = 0
 		view.set_ghost(false)
 		view.set_highlight(true)
-		hud.show_place_bar(place_state, sim.funds, place_preset)
+		_bar()
 	else:
 		_finish_place()
 
@@ -260,17 +280,56 @@ func _finish_place() -> void:
 
 func _open_popup() -> void:
 	state = State.POPUP
-	hud.show_popup(sim.preset_of(popup_id))
+	hud.show_popup(sim.preset_of(popup_id), sim.is_guard(popup_id))
 
 func _demolish() -> void:
 	sim.demolish(popup_id)
+	sfx.demolish()
 	_close_popup()
 
 func _close_popup() -> void:
 	hud.hide_popup()
 	state = State.PLAY
 
+## バブルを弾く。PLAY のときだけ（停止中は、バブルは凍結して見えるだけ）。
+## 設備のタップより優先。判定の半径は画面上の大きさ（論理px）で決め、スマホの指でも当てやすくする
+func _try_pop_bubble(screen: Vector2) -> bool:
+	if not town:
+		return false
+	var list = sim.get("bubbles")
+	if list == null or list.is_empty():
+		return false
+	var best = null
+	var best_d := 56.0
+	var best_pos := Vector2.ZERO
+	var best_p3 := Vector3.ZERO
+	for b in list:
+		var a = b.agent
+		var p3 := Vector3(a.pos.x, 1.35, a.pos.y)
+		if rig.cam.is_position_behind(p3):
+			continue
+		var sp := rig.cam.unproject_position(p3)
+		var d := sp.distance_to(screen)
+		if d < best_d:
+			best_d = d
+			best = b
+			best_pos = sp
+			best_p3 = p3
+	if best == null:
+		return false
+	if not sim.pop_bubble(best.id):
+		return false
+	_combo += 1
+	_combo_t = 0.0
+	sfx.pop(_combo)
+	agents.spawn_pop(best_p3)
+	hud.fly_points(best_pos, "+%d" % Tuning.T_BUBBLE_VALUE)
+	hud.show_combo(_combo)
+	return true
+
 func _on_tap(screen: Vector2) -> void:
+	if state == State.PLAY and _try_pop_bubble(screen):
+		return
 	var g = rig.screen_to_ground(screen)
 	if g == null:
 		return

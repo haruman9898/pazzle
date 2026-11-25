@@ -173,7 +173,7 @@ func demolish_signal() -> void:
 func can_place() -> bool:
 	return not signal_on and funds >= Tuning.SIGNAL_COST
 
-func placement_at(g: Vector2) -> Dictionary:
+func placement_at(g: Vector2, _guard := false) -> Dictionary:
 	return {"ok": can_place() and absf(g.x) < 3.4 and absf(g.y) < 3.4, "pos": Vector2.ZERO}
 
 func place_signal_at(_pl: Dictionary, preset: int) -> bool:
@@ -190,6 +190,9 @@ func set_preset(_id: int, preset: int) -> void:
 
 func preset_of(_id: int) -> int:
 	return signal_preset
+
+func is_guard(_id: int) -> bool:
+	return false
 
 func set_signal_preset(preset: int) -> void:
 	signal_preset = preset

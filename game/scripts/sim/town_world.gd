@@ -45,6 +45,7 @@ class Car:
 	var has_bubble := false
 	var forced_flag := false
 	var queue_orderly := false   # 赤信号待ちの車の後ろに並んでいる（秩序ある待ち）
+	var pointless_red := false   # 渡る人がいないのに赤で待たされている（無駄な赤）
 	var done := false
 
 	func length() -> float:
@@ -136,6 +137,7 @@ var links: Array = []             # [{a, b, line}]
 var sig_clock := 0.0
 var fav_dir := [1, 1, 1, 1]       # 道路ごとの、車の多い向き（予定表から決める）
 var _next_sig := 1
+var _guard_key := 0
 var _order := 0
 
 var _next_id := 1
@@ -253,6 +255,8 @@ func _build_schedule() -> void:
 			var mode := _pick_mode(rng, share)
 			_add_trip(_sample_time(rng, Tuning.T_COMMUTE_MORNING), mode, SimWorld.ROLE_COMMUTER, h, office)
 			_add_trip(_sample_time(rng, Tuning.T_COMMUTE_EVENING), mode, SimWorld.ROLE_COMMUTER, office, h)
+			if rng.randf() < Tuning.T_EVENING_EXTRA:
+				_add_trip(_sample_time(rng, Tuning.T_COMMUTE_EVENING), mode, SimWorld.ROLE_COMMUTER, office, h)
 		# 児童（徒歩。朝は家→学校、午後は逆）
 		for i in Tuning.T_CHILDREN.get(h, 12):
 			_add_trip(_sample_time(rng, Tuning.T_SCHOOL_GO), 0, SimWorld.ROLE_CHILD, h, school)
@@ -275,12 +279,12 @@ func _build_schedule() -> void:
 	while tau < day_s:
 		var game_s := Tuning.T_LOOP_START * 3600.0 + tau * Tuning.CLOCK_RATE
 		var hh := game_s / 3600.0
-		acc_c += _rate_at(hh, Tuning.T_THROUGH_CAR_BASE, Tuning.T_THROUGH_CAR_PEAK, Tuning.T_THROUGH_CAR_NIGHT) * dts
+		acc_c += _rate_at(hh, Tuning.T_THROUGH_CAR_BASE, Tuning.T_THROUGH_CAR_PEAK, Tuning.T_THROUGH_CAR_NIGHT, Tuning.T_THROUGH_CAR_AFTN) * dts
 		acc_p += _rate_at(hh, Tuning.T_THROUGH_PED_BASE, Tuning.T_THROUGH_PED_PEAK, 0.0) * dts
 		while acc_c >= 1.0:
 			acc_c -= 1.0
-			var a := _pick_edge_rng(trng, -1)
-			var b := _pick_edge_rng(trng, a)
+			var a := _pick_edge_rng(trng, -1, hh)
+			var b := _pick_edge_rng(trng, a, hh)
 			_schedule.append({"t": game_s, "mode": 1, "role": SimWorld.ROLE_COMMUTER, "src": 100 + a, "dst": 100 + b, "tries": 0, "through": true})
 		while acc_p >= 1.0:
 			acc_p -= 1.0
@@ -443,16 +447,16 @@ func ped_left_of(sg: Dictionary, arm: int) -> float:
 
 # --- 置く場所 ---
 ## 画面でタップした地面の点から、信号を置ける場所を調べる
-func placement_at(g: Vector2) -> Dictionary:
-	if funds < Tuning.SIGNAL_COST:
+func placement_at(g: Vector2, guard := false) -> Dictionary:
+	if funds < (Tuning.GUARD_COST if guard else Tuning.SIGNAL_COST):
 		return {"ok": false, "reason": "funds"}
 	# 交差点
 	for j in 4:
 		var c := TownMap.junction_center(j)
 		if maxf(absf(g.x - c.x), absf(g.y - c.y)) < 3.6:
-			if junction_sig[j] >= 0:
+			if _junction_occupied(j):
 				return {"ok": false, "reason": "exists"}
-			return {"ok": true, "kind": 0, "j": j, "pos": c}
+			return {"ok": true, "kind": 0, "j": j, "pos": c, "guard": guard}
 	# 路上
 	for l in TownMap.LINE_COUNT:
 		var perp: float = absf((g.y if TownMap.line_axis(l) == 0 else g.x) - TownMap.line_c(l))
@@ -467,27 +471,59 @@ func placement_at(g: Vector2) -> Dictionary:
 			var sg: Dictionary = signals[id]
 			if sg.kind == 1 and sg.line == l and absf(sg.t - t) < Tuning.T_XWALK_MIN_GAP:
 				return {"ok": false, "reason": "near_signal"}
-		return {"ok": true, "kind": 1, "line": l, "t": t, "pos": TownMap.line_point(l, t)}
+		return {"ok": true, "kind": 1, "line": l, "t": t, "pos": TownMap.line_point(l, t), "guard": guard}
 	return {"ok": false, "reason": "no_road"}
 
 func place_signal_at(pl: Dictionary, preset: int) -> bool:
-	if not pl.get("ok", false) or funds < Tuning.SIGNAL_COST:
+	var guard: bool = pl.get("guard", false)
+	var cost: int = Tuning.GUARD_COST if guard else Tuning.SIGNAL_COST
+	if not pl.get("ok", false) or funds < cost:
 		return false
-	funds -= Tuning.SIGNAL_COST
+	funds -= cost
 	decisions += 1
 	var sg := {"id": _next_sig, "kind": pl.kind, "j": pl.get("j", -1), "line": pl.get("line", -1), "t": pl.get("t", 0.0),
-		"pos": pl.pos, "preset": preset, "shift": sig_clock, "order": _order}
+		"pos": pl.pos, "preset": 1 if guard else preset, "shift": sig_clock, "order": _order, "guard": guard}
 	_next_sig += 1
 	_order += 1
 	signals[sg.id] = sg
-	if sg.kind == 0:
-		junction_sig[sg.j] = sg.id
-	waves.append({"c": sg.pos, "r": 0.0})
+	if _active(sg):
+		waves.append({"c": sg.pos, "r": 0.0})
 	_signals_changed()
 	return true
 
+## 誘導員は、決まった時間帯だけ立つ（信号と同じ働き）。信号は常に有効。
+## 制御に関わる所は、必ずこの関門を通す（通さないと「いないはずの誘導員」が動く）
+func _active(sg: Dictionary) -> bool:
+	if not sg.get("guard", false):
+		return true
+	var h := hour_of_day()
+	for w in Tuning.T_GUARD_WINDOWS:
+		if h >= w[0] and h < w[1]:
+			return true
+	return false
+
+func guard_active(id: int) -> bool:
+	return signals.has(id) and _active(signals[id])
+
+func _junction_occupied(j: int) -> bool:
+	for id in signals:
+		if signals[id].kind == 0 and signals[id].j == j:
+			return true
+	return false
+
+func _rebuild_junction_sig() -> void:
+	for i in 4:
+		junction_sig[i] = -1
+	for id in signals:
+		var sg: Dictionary = signals[id]
+		if sg.kind == 0 and _active(sg):
+			junction_sig[sg.j] = id
+
 func can_place() -> bool:
 	return funds >= Tuning.SIGNAL_COST
+
+func can_place_guard() -> bool:
+	return funds >= Tuning.GUARD_COST
 
 func demolish(id: int) -> void:
 	demolish_signal(id)
@@ -497,6 +533,9 @@ func set_preset(id: int, preset: int) -> void:
 
 func preset_of(id: int) -> int:
 	return signals[id].preset if signals.has(id) else 1
+
+func is_guard(id: int) -> bool:
+	return signals.has(id) and signals[id].get("guard", false)
 
 func signal_at(g: Vector2) -> int:
 	var best := -1
@@ -512,11 +551,9 @@ func demolish_signal(id: int) -> void:
 	if not signals.has(id):
 		return
 	var sg: Dictionary = signals[id]
-	if sg.kind == 0:
-		junction_sig[sg.j] = -1
 	signals.erase(id)
 	decisions += 1
-	funds += int(Tuning.SIGNAL_COST * Tuning.DEMOLISH_REFUND_RATE)
+	funds += int((Tuning.GUARD_COST if sg.get("guard", false) else Tuning.SIGNAL_COST) * Tuning.DEMOLISH_REFUND_RATE)
 	_signals_changed()
 
 func set_signal_preset(id: int, preset: int) -> void:
@@ -526,11 +563,14 @@ func set_signal_preset(id: int, preset: int) -> void:
 		_signals_changed()
 
 func _signals_changed() -> void:
+	_rebuild_junction_sig()
 	_relink()
-	# 信号のある横断歩道の行
+	# 信号のある横断歩道の行（稼働中のものだけ）
 	_xrow.clear()
 	for id in signals:
 		var sg: Dictionary = signals[id]
+		if not _active(sg):
+			continue
 		if sg.kind == 0:
 			var rows := TownMap.junction_xrows(sg.j)
 			for k in rows:
@@ -542,6 +582,15 @@ func _signals_changed() -> void:
 		_fields[dest].dirty = true
 	for p in peds:
 		p.replan = true
+	_guard_key = _guard_state()
+
+## 誘導員の稼働状態を、ひとまとまりの値にして、変わったかを調べる
+func _guard_state() -> int:
+	var k := 0
+	for id in signals:
+		if signals[id].get("guard", false) and _active(signals[id]):
+			k |= 1 << (id % 30)
+	return k
 
 # --- 自動連動 ---
 func _sig_lines(sg: Dictionary) -> Array:
@@ -563,7 +612,10 @@ func _relink() -> void:
 	links.clear()
 	if not linking:
 		return
-	var ids := signals.keys()
+	var ids: Array = []
+	for id in signals:
+		if not signals[id].get("guard", false):
+			ids.append(id)
 	ids.sort_custom(func(a, b): return signals[a].order < signals[b].order)
 	# つながる組
 	var nb := {}
@@ -620,6 +672,8 @@ func step(dt: float, real_dt := -1.0) -> void:
 	clock_s += dt * Tuning.CLOCK_RATE
 	sig_clock += dt
 	_field_budget = 2
+	if _guard_state() != _guard_key:
+		_signals_changed()       # 誘導員が立つ／帰る
 	_spawn(dt)
 	_build_hash()
 	_update_fields()
@@ -656,6 +710,7 @@ func restart() -> void:
 	signals.clear()
 	for i in 4:
 		junction_sig[i] = -1
+	_guard_key = 0
 	links.clear()
 	_xrow.clear()
 	for dest in _fields:
@@ -670,11 +725,12 @@ func restart() -> void:
 # 発生
 # ---------------------------------------------------------------------
 ## 時刻 h（時）の発生率（1/シム秒）: 朝と夕の山に加えて、夜の山（night）
-func _rate_at(h: float, base: float, peak: float, night: float) -> float:
+func _rate_at(h: float, base: float, peak: float, night: float, aftn := 0.0) -> float:
 	var x := (h - 7.9) / 0.7
 	var x2 := (h - 17.8) / 0.8
 	var x3 := (h - Tuning.T_NIGHT_PEAK_H) / Tuning.T_NIGHT_PEAK_W
-	return base + peak * (exp(-x * x) + 0.8 * exp(-x2 * x2)) + night * exp(-x3 * x3)
+	var x4 := (h - Tuning.T_AFTN_PEAK_H) / Tuning.T_AFTN_PEAK_W
+	return base + peak * (exp(-x * x) + 0.8 * exp(-x2 * x2)) + night * exp(-x3 * x3) + aftn * exp(-x4 * x4)
 
 func _spawn(dt: float) -> void:
 	# 予定表（建物から出る人）
@@ -691,17 +747,28 @@ func _spawn(dt: float) -> void:
 				still.append(tr)
 	_pending = still
 
+## 時間帯ごとの入口の重み（山ごとに、問題の場所を変える）
+func _edge_weights(h: float) -> Array:
+	if h >= 14.5 and h < 17.0:
+		return Tuning.T_EDGE_WEIGHT_AFTERNOON
+	if h >= 17.0 and h < 20.5:
+		return Tuning.T_EDGE_WEIGHT_EVENING
+	if h >= 20.5:
+		return Tuning.T_EDGE_WEIGHT_NIGHT
+	return Tuning.T_EDGE_WEIGHT
+
 ## 通過交通の入口（重みつき）。exclude は選ばない入口（出口は入口と別にする）
-func _pick_edge_rng(rng: RandomNumberGenerator, exclude: int) -> int:
+func _pick_edge_rng(rng: RandomNumberGenerator, exclude: int, h := 8.0) -> int:
+	var wts := _edge_weights(h)
 	var total := 0.0
 	for e in 8:
 		if e != exclude:
-			total += Tuning.T_EDGE_WEIGHT[e]
+			total += wts[e]
 	var r := rng.randf() * total
 	for e in 8:
 		if e == exclude:
 			continue
-		r -= Tuning.T_EDGE_WEIGHT[e]
+		r -= wts[e]
 		if r <= 0.0:
 			return e
 	return 7 if exclude != 7 else 6
@@ -1039,7 +1106,7 @@ func _xwalk_target(c: Car) -> float:
 	var stop_d: float = c.v * c.v / (2.0 * Tuning.CAR_DECEL_COMFORT)
 	for id in signals:
 		var sg: Dictionary = signals[id]
-		if sg.kind != 1:
+		if sg.kind != 1 or not _active(sg):
 			continue
 		for pc in c.pieces:
 			if pc.l != sg.line:
@@ -1152,6 +1219,7 @@ func _step_cars(dt: float) -> void:
 		c.queue_orderly = obs != null and obs.kind == KIND_CAR and (obs.at_red or obs.queue_orderly)
 		if target < INF and target - c.s < 5.0:
 			c.at_red = true
+		c.pointless_red = (c.at_red or c.queue_orderly) and c.v < 0.3 and not _someone_to_protect(c)
 		if c.ji < c.jc.size() and c.jc[c.ji].state == 0:
 			target = minf(target, c.stop_target)
 		if target < INF:
@@ -1245,7 +1313,7 @@ static func _car_rect_dist(c: Car, p: Vector2) -> float:
 	return Vector2(maxf(fx, 0.0), maxf(fy, 0.0)).length()
 
 func _ped_green_left(cx: Dictionary) -> float:
-	if cx.sig < 0 or not signals.has(cx.sig):
+	if cx.sig < 0 or not signals.has(cx.sig) or not _active(signals[cx.sig]):
 		return INF
 	return ped_left_of(signals[cx.sig], cx.arm)
 
@@ -1268,7 +1336,7 @@ func _step_peds(dt: float) -> void:
 				var cx: Dictionary = p.cross[p.seg]
 				var ok := true
 				p.wait_signal = false
-				var signaled: bool = cx.sig >= 0 and signals.has(cx.sig)
+				var signaled: bool = cx.sig >= 0 and signals.has(cx.sig) and _active(signals[cx.sig])
 				if signaled and _ped_green_left(cx) < Tuning.PED_MIN_GREEN_LEFT:
 					ok = false
 					p.wait_signal = true
@@ -1320,7 +1388,18 @@ func _step_peds(dt: float) -> void:
 # ---------------------------------------------------------------------
 ## 赤信号で待っている（秩序ある待ち）
 func _orderly_wait(x) -> bool:
-	return (x.kind == KIND_PED and x.wait_signal) or (x.kind == KIND_CAR and (x.at_red or x.queue_orderly))
+	if x.kind == KIND_PED:
+		return x.wait_signal
+	if not (x.at_red or x.queue_orderly):
+		return false
+	return not x.pointless_red
+
+## 赤信号で止まっている車のそばに、渡る人（待っている人を含む）がいるか
+func _someone_to_protect(c) -> bool:
+	for q in peds:
+		if (q.crossing or q.waiting) and q.pos.distance_to(c.pos) < Tuning.T_POINTLESS_R:
+			return true
+	return false
 
 func _add_cause(x, key: String, v: float) -> void:
 	x.cause[key] = x.cause.get(key, 0.0) + v
@@ -1359,8 +1438,12 @@ func _update_discontent(dt: float) -> void:
 		else:
 			if x.kind == KIND_PED:
 				x.wait_t = 0.0
+		var red_over := false
 		if x.waiting and _orderly_wait(x):
-			x.expected += dt          # 赤信号の待ちは予期された待ち。遅れには数えない
+			if not Tuning.T_RED_PENALTY_ON or x.wait_t <= Tuning.T_RED_GRACE:
+				x.expected += dt      # 赤信号の待ちは予期された待ち。遅れには数えない
+			else:
+				red_over = true       # 長すぎる赤待ちは、遅れを軽い率で数える（スイッチ ON のとき）
 		var sig_wait: bool = x.kind == KIND_PED and x.wait_signal
 		var tol := Tuning.WAIT_TOLERANCE_SIGNAL if (sig_wait or (x.kind == KIND_CAR and (x.at_red or x.queue_orderly))) else Tuning.WAIT_TOLERANCE
 		if x.waiting and x.wait_t > tol:
@@ -1369,18 +1452,22 @@ func _update_discontent(dt: float) -> void:
 			if x.kind == KIND_PED:
 				rate = Tuning.T_D_RED_PED if sig_wait else Tuning.D_WAIT_PED
 				key = "signal" if sig_wait else "jay"
+			elif x.pointless_red:
+				rate = Tuning.T_D_POINTLESS
+				key = "red"
 			elif x.at_red or x.queue_orderly:
 				rate = Tuning.T_D_RED_CAR      # 赤信号の待ちは、渋滞よりゆるい（秩序ある待ち）
 				key = "signal"
-			if key != "signal":
+			if key != "signal" and key != "red":
 				rate *= Tuning.T_D_SCALE        # 倍率は衝突の不満だけ。信号待ち（秩序ある待ち）にはかけない
 			dd += rate * dt
 			_add_cause(x, key, rate * dt)
 		elif not x.waiting:
 			dd -= Tuning.D_DECAY * dt
 		if x.t_alive > x.expected * Tuning.DELAY_FACTOR:
-			dd += Tuning.D_DELAY * dt
-			_add_cause(x, "delay", Tuning.D_DELAY * dt)
+			var drate: float = Tuning.D_DELAY * (Tuning.T_RED_DELAY_FACTOR if red_over else 1.0)
+			dd += drate * dt
+			_add_cause(x, "delay", drate * dt)
 		var b: float = bump.get(x, 0.0)
 		if b > 0.0:
 			_add_cause(x, "spread", b)

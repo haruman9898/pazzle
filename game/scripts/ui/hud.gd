@@ -18,6 +18,7 @@ signal home_pressed
 signal mode_toggled(is_24h: bool)
 signal rain_toggled(on: bool)
 signal result_pressed
+signal mute_toggled(on: bool)
 
 const PANEL_W := 390.0
 const BAR_H := 68.0
@@ -46,6 +47,7 @@ var info_box: VBoxContainer
 const CAUSES := [
 	["jay", "横断待ち", Color(0.98, 0.6, 0.2)],
 	["signal", "信号待ち", Color(0.35, 0.65, 1.0)],
+	["red", "無駄な赤", Color(0.9, 0.5, 0.75)],
 	["jam", "渋滞", Color(0.95, 0.25, 0.25)],
 	["delay", "遅れ", Color(0.7, 0.45, 0.95)],
 	["hiyari", "ヒヤリ", Color(1.0, 0.9, 0.2)],
@@ -54,9 +56,14 @@ const CAUSES := [
 var panel: PanelContainer
 var panel_funds: Label
 var signal_item: Button
+var guard_item: Button
+var guard_desc: Label
+var sound_button: Button
+var combo_label: Label
 var place_bar: PanelContainer
 var place_hint: Label
 var place_presets: Array = []
+var place_interval_label: Label
 var place_cost: Label
 var place_confirm: Button
 var place_cancel: Button
@@ -221,9 +228,9 @@ func _build_corner_buttons(root: Control) -> void:
 	mode_button.text = "朝ピーク"
 	mode_button.toggle_mode = true
 	mode_button.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	mode_button.offset_left = 160
+	mode_button.offset_left = 300
 	mode_button.offset_top = -88
-	mode_button.offset_right = 330
+	mode_button.offset_right = 470
 	mode_button.offset_bottom = -16
 	mode_button.focus_mode = Control.FOCUS_NONE
 	mode_button.toggled.connect(func(on):
@@ -235,15 +242,29 @@ func _build_corner_buttons(root: Control) -> void:
 	rain_button.text = "晴れ"
 	rain_button.toggle_mode = true
 	rain_button.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
-	rain_button.offset_left = 342
+	rain_button.offset_left = 482
 	rain_button.offset_top = -88
-	rain_button.offset_right = 462
+	rain_button.offset_right = 602
 	rain_button.offset_bottom = -16
 	rain_button.focus_mode = Control.FOCUS_NONE
 	rain_button.toggled.connect(func(on):
 		rain_button.text = "雨" if on else "晴れ"
 		rain_toggled.emit(on))
 	root.add_child(rain_button)
+	# 消音の切り替え（仕様 8.5）
+	sound_button = Button.new()
+	sound_button.text = "音 ON"
+	sound_button.toggle_mode = true
+	sound_button.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	sound_button.offset_left = 154
+	sound_button.offset_top = -88
+	sound_button.offset_right = 290
+	sound_button.offset_bottom = -16
+	sound_button.focus_mode = Control.FOCUS_NONE
+	sound_button.toggled.connect(func(muted):
+		sound_button.text = "消音" if muted else "音 ON"
+		mute_toggled.emit(muted))
+	root.add_child(sound_button)
 
 func _build_panel(root: Control) -> void:
 	panel = PanelContainer.new()
@@ -274,6 +295,18 @@ func _build_panel(root: Control) -> void:
 	desc.add_theme_font_size_override("font_size", 19)
 	desc.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
 	vb.add_child(desc)
+	guard_item = Button.new()
+	guard_item.custom_minimum_size = Vector2(0, 92)
+	guard_item.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	guard_item.focus_mode = Control.FOCUS_NONE
+	guard_item.pressed.connect(func(): item_selected.emit("guard"))
+	vb.add_child(guard_item)
+	guard_desc = Label.new()
+	var gdesc := guard_desc
+	gdesc.text = "朝7:00〜8:30と午後15:00〜16:30だけ\n立つ。信号と同じ働き。動かせない。"
+	gdesc.add_theme_font_size_override("font_size", 19)
+	gdesc.add_theme_color_override("font_color", Color(0.8, 0.8, 0.8))
+	vb.add_child(gdesc)
 	var sp := Control.new()
 	sp.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	vb.add_child(sp)
@@ -306,6 +339,7 @@ func _build_place_bar(root: Control) -> void:
 	var il := Label.new()
 	il.text = "間隔"
 	hb.add_child(il)
+	place_interval_label = il
 	var group := ButtonGroup.new()
 	for i in Tuning.SIGNAL_PRESET_LABELS.size():
 		var b := Button.new()
@@ -383,10 +417,12 @@ func update_bar(clock_h: float, gauge: float, hiyari: int, funds: int) -> void:
 	hiyari_label.text = "ヒヤリ %d" % hiyari
 	funds_label.text = "開発ポイント %d" % funds
 
-func open_panel(funds: int, can_signal: bool) -> void:
+func open_panel(funds: int, can_signal: bool, can_guard := false) -> void:
 	panel_funds.text = "残り開発ポイント %d" % funds
 	signal_item.text = "  信号機　　費用 %d" % Tuning.SIGNAL_COST
 	signal_item.disabled = not can_signal
+	guard_item.text = "  誘導員　　費用 %d" % Tuning.GUARD_COST
+	guard_item.disabled = not can_guard
 	panel.visible = true
 	if _panel_tween:
 		_panel_tween.kill()
@@ -405,18 +441,20 @@ func close_panel() -> void:
 	_panel_tween.chain().tween_callback(func(): panel.visible = false)
 
 ## 配置バーの状態: 0=場所を選ぶ 1=仮配置中（確定するとそのままプレイに戻る）
-func show_place_bar(state: int, funds: int, preset: int) -> void:
+func show_place_bar(state: int, funds: int, preset: int, cost := 100, presets := true) -> void:
 	place_bar.visible = true
 	var pending := state == 1
 	for b in place_presets:
 		b.disabled = not pending
+		b.visible = presets
+	place_interval_label.visible = presets
 	place_presets[preset].button_pressed = true
 	place_confirm.visible = pending
 	place_cancel.visible = true
 	place_cancel.text = "キャンセル" if pending else "やめる"
 	if pending:
-		place_hint.text = "間隔を選んで「確定」"
-		place_cost.text = "費用 %d／残り %d→%d" % [Tuning.SIGNAL_COST, funds, funds - Tuning.SIGNAL_COST]
+		place_hint.text = "間隔を選んで「確定」" if presets else "「確定」で立ってもらう"
+		place_cost.text = "費用 %d／残り %d→%d" % [cost, funds, funds - cost]
 	else:
 		place_hint.text = hint_pick
 		place_cost.text = ""
@@ -424,9 +462,12 @@ func show_place_bar(state: int, funds: int, preset: int) -> void:
 func hide_place_bar() -> void:
 	place_bar.visible = false
 
-func show_popup(preset: int) -> void:
+func show_popup(preset: int, is_guard := false) -> void:
 	popup_presets[preset].button_pressed = true
-	popup_demolish_btn.text = "取り壊し（+%d 返金）" % int(Tuning.SIGNAL_COST * Tuning.DEMOLISH_REFUND_RATE)
+	for pb in popup_presets:
+		pb.visible = not is_guard
+	var cost: int = Tuning.GUARD_COST if is_guard else Tuning.SIGNAL_COST
+	popup_demolish_btn.text = "取り壊し（+%d 返金）" % int(cost * Tuning.DEMOLISH_REFUND_RATE)
 	popup.visible = true
 
 func hide_popup() -> void:
@@ -565,3 +606,49 @@ func show_result(title: String, lines: Array, button: String) -> void:
 
 func hide_result() -> void:
 	result_panel.visible = false
+
+
+# ---------------------------------------------------------------------
+# バブルを弾いたときの表示: 「+10」がバブルの位置から、開発ポイントの数字へ飛ぶ
+# ---------------------------------------------------------------------
+func fly_points(from: Vector2, text: String) -> void:
+	var l := _lbl(text, 30, Color(1.0, 0.95, 0.4))
+	l.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+	l.add_theme_constant_override("outline_size", 6)
+	l.position = from - Vector2(24, 20)
+	l.z_index = 50
+	var parent: Node = funds_label.get_parent().get_parent()
+	parent.add_child(l)
+	var target := funds_label.global_position + Vector2(40, 0)
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(l, "position", target, 0.55).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	tw.tween_property(l, "modulate:a", 0.0, 0.2).set_delay(0.4)
+	tw.chain().tween_callback(l.queue_free)
+	# 数字が少し弾む
+	funds_label.pivot_offset = Vector2(40, 16)
+	var bump := create_tween()
+	bump.tween_interval(0.5)
+	bump.tween_property(funds_label, "scale", Vector2(1.18, 1.18), 0.07)
+	bump.tween_property(funds_label, "scale", Vector2.ONE, 0.12)
+
+## 連鎖（2.5秒以内に続けて弾いたとき）の数を、短く出す
+func show_combo(n: int) -> void:
+	if combo_label == null:
+		combo_label = _lbl("", 28, Color(1.0, 0.9, 0.4))
+		combo_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.9))
+		combo_label.add_theme_constant_override("outline_size", 6)
+		combo_label.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+		combo_label.offset_left = -300
+		combo_label.offset_right = -16
+		combo_label.offset_top = BAR_H + 100
+		combo_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		funds_label.get_parent().get_parent().add_child(combo_label)
+	if n < 2:
+		combo_label.visible = false
+		return
+	combo_label.text = "連続 %d" % n
+	combo_label.visible = true
+	combo_label.modulate.a = 1.0
+	var tw := create_tween()
+	tw.tween_interval(1.2)
+	tw.tween_property(combo_label, "modulate:a", 0.0, 0.4)

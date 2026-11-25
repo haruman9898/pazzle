@@ -48,6 +48,9 @@ var _p_arm: MultiMesh
 var _p_umb: MultiMesh
 var _bub_mm: MultiMesh
 var _bub_core: MultiMesh
+var _fx_mm: MultiMesh
+var _fx: Array = []          # はじけた演出 {p, v, age, life, size, kind(0=破片 1=膨らんで消える玉)}
+var _fx_rng := RandomNumberGenerator.new()
 var _rain_mm: MultiMesh
 var _rain_node: MultiMeshInstance3D
 var _rain_pos := PackedVector3Array()
@@ -86,6 +89,7 @@ func setup(s) -> void:
 	bub.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_bub_mm = _mk(sph, 16, bub)
 	_bub_core = _mk(sph, 16, unlit)
+	_fx_mm = _mk(sph, 96, bub)
 	_car_body = _mk(box, MAX_CARS, lit)
 	_car_cabin = _mk(box, MAX_CARS, lit)
 	_car_lamps = _mk(box, MAX_CARS * 4, unlit)
@@ -156,6 +160,7 @@ func _process(delta: float) -> void:
 	_update_cars()
 	_update_people()
 	_update_bubbles()
+	_update_fx(delta)
 	if raining:
 		_update_rain(delta)
 	update_ms = lerpf(update_ms, (Time.get_ticks_usec() - t0) / 1000.0, 0.1)
@@ -323,15 +328,51 @@ func _update_bubbles() -> void:
 		var shrink := clampf(left / 1.0, 0.0, 1.0)
 		var sc: float = grow * shrink
 		var wob := sin(_t * 3.0 + float(b.id))
-		var pos := Vector3(a.pos.x + wob * 0.05, 1.25 + 0.08 * sin(_t * 4.0 + float(b.id)), a.pos.y)
-		var size := 0.62 * sc
+		var pos := Vector3(a.pos.x + wob * 0.05, 1.35 + 0.08 * sin(_t * 4.0 + float(b.id)), a.pos.y)
+		var size := 0.95 * sc
 		_bub_mm.set_instance_transform(i, Transform3D(Basis.from_scale(Vector3(size, size, size)), pos))
 		_bub_mm.set_instance_color(i, Color(0.7, 0.9, 1.0, 0.55))
-		var core := 0.22 * sc
+		var core := 0.3 * sc
 		_bub_core.set_instance_transform(i, Transform3D(Basis.from_scale(Vector3(core, core, core)), pos))
 		_bub_core.set_instance_color(i, Color(0.95, 0.3, 0.2))
 	_bub_mm.visible_instance_count = n
 	_bub_core.visible_instance_count = n
+
+# ---------------------------------------------------------------------
+# バブルがはじけた演出: 玉が一瞬ふくらんで消え、破片が飛び散る
+# ---------------------------------------------------------------------
+func spawn_pop(p: Vector3) -> void:
+	_fx.append({"p": p, "v": Vector3.ZERO, "age": 0.0, "life": 0.18, "size": 0.95, "kind": 1})
+	for i in 9:
+		var ang := TAU * float(i) / 9.0 + _fx_rng.randf() * 0.5
+		var sp := _fx_rng.randf_range(1.6, 2.8)
+		_fx.append({"p": p, "v": Vector3(cos(ang) * sp, _fx_rng.randf_range(1.2, 2.4), sin(ang) * sp), "age": 0.0, "life": 0.5, "size": 0.1, "kind": 0})
+	if _fx.size() > 90:
+		_fx = _fx.slice(_fx.size() - 90)
+
+func _update_fx(delta: float) -> void:
+	var keep: Array = []
+	var n := 0
+	for f in _fx:
+		f.age += delta
+		if f.age >= f.life:
+			continue
+		keep.append(f)
+		var k: float = f.age / f.life
+		var col := Color(0.7, 0.9, 1.0, 1.0 - k)
+		var size: float = f.size
+		if f.kind == 1:
+			size = f.size * (1.0 + 0.9 * k)             # 一瞬ふくらむ
+			col = Color(0.8, 0.95, 1.0, 0.55 * (1.0 - k))
+		else:
+			f.v.y -= 6.0 * delta
+			f.p += f.v * delta
+			size = f.size * (1.0 - 0.5 * k)
+		_fx_mm.set_instance_transform(n, Transform3D(Basis.from_scale(Vector3(size, size, size)), f.p))
+		_fx_mm.set_instance_color(n, col)
+		n += 1
+	_fx = keep
+	_fx_mm.visible_instance_count = n
 
 # ---------------------------------------------------------------------
 func _update_rain(delta: float) -> void:

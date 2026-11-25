@@ -82,6 +82,25 @@ func show(label: String, r: Dictionary) -> void:
 		label, fmt_win(r), "はい(%.1f時)" % r.fail_h if r.fail else "いいえ", r.contacts, r.max_stop, r.hiyari, r.trips,
 		r.bub.spawned, r.bub.collected, r.bub.missed, r.funds, r.ms])
 
+func _eval_policy(pol: Callable, seeds: Array) -> Dictionary:
+	var acc := {"mean": {}, "max": {}, "m95": {}, "fails": 0, "decisions": 0.0, "points": 0, "contacts": 0}
+	for k in WINDOWS:
+		acc.mean[k] = 0.0
+		acc.max[k] = 0.0
+		acc.m95[k] = 0.0
+	for sd in seeds:
+		var r := run_day(pol, sd)
+		for k in WINDOWS:
+			acc.mean[k] += r.mean[k] / seeds.size()
+			acc.max[k] += r.win[k] / seeds.size()
+			acc.m95[k] += r.m95[k] / seeds.size()
+		if r.fail:
+			acc.fails += 1
+		acc.decisions += float(r.decisions) / seeds.size()
+		acc.points += int(r.funds / seeds.size())
+		acc.contacts += r.contacts
+	return acc
+
 func candidates(w: TownWorld) -> Array:
 	var out: Array = []
 	for j in 4:
@@ -96,6 +115,9 @@ func candidates(w: TownWorld) -> Array:
 			t += 1.0
 	return out
 
+func Tuning_override_red(args: Array) -> void:
+	pass
+
 func _init() -> void:
 	var args := OS.get_cmdline_user_args()
 	var none := func(_w, _h): pass
@@ -103,10 +125,28 @@ func _init() -> void:
 		for sd in SEEDS:
 			show("信号なし 種%d" % sd, run_day(none, sd))
 	if "--traj" in args:
-		var r := run_day(none)
-		show("信号なし", r)
-		for t in r.traj:
-			print("  %4.1f時 ゲージ%3d 車%2d 人%3d ポイント%3d 回収%2d" % [t[0], int(t[1]), t[2], t[3], t[4], t[5]])
+		# 無対策／交差点0（短い）／学校前（普通）の、1日の推移（種3つの平均）。--red で赤待ちの遅れペナルティを ON
+		Tuning_override_red(args)
+		var w3 := TownWorld.new()
+		var cases := {"なし": [null, 1], "交差点0 短い": [w3.placement_at(TownMap.junction_center(0)), 0], "学校前 普通": [w3.placement_at(TownMap.line_point(2, 0.5)), 1]}
+		var table := {}
+		for name in cases:
+			var acc := {}
+			for sd in SEEDS:
+				var pl = cases[name][0]
+				var pv: int = cases[name][1]
+				var pol := func(w, _h):
+					if pl != null and w.signals.is_empty() and w.clock_hours() < 6.01:
+						w.place_signal_at(pl, pv)
+						w.waves.clear()
+				var r := run_day(pol, sd)
+				for t in r.traj:
+					var hh := int(t[0])
+					acc[hh] = acc.get(hh, 0.0) + t[1] / SEEDS.size()
+			table[name] = acc
+		print("時刻   なし  交差点0短い  学校前普通   （不満度。種3つの平均）")
+		for hh in range(6, 31):
+			print("%4d  %4d  %8d  %8d" % [hh % 24, table["なし"].get(hh, 0), table["交差点0 短い"].get(hh, 0), table["学校前 普通"].get(hh, 0)])
 	if "--key" in args:
 		# 主要な置き方だけを、種3つの平均で比べる
 		var w1 := TownWorld.new()
@@ -167,6 +207,83 @@ func _init() -> void:
 							w.waves.clear()
 				var r := run_day(pol, sd)
 				show("%s 種%d 置いた時刻=%s 決定=%d" % [name, sd, ",".join(times), r.decisions], r)
+	if "--one" in args:
+		# 1基だけ置いて、あとは何もしない（開発ポイントを使わない）
+		var seeds5b := [Tuning.T_SEED, 11, 22, 33, 44]
+		var w5 := TownWorld.new()
+		var cases1 := {"交差点0 短い": [w5.placement_at(TownMap.junction_center(0)), 0], "交差点0 普通": [w5.placement_at(TownMap.junction_center(0)), 1], "学校前 普通": [w5.placement_at(TownMap.line_point(2, 0.5)), 1], "交差点2 短い": [w5.placement_at(TownMap.junction_center(2)), 0]}
+		for name in cases1:
+			var pl: Dictionary = cases1[name][0]
+			var pv: int = cases1[name][1]
+			var pol1 := func(w, _h):
+				if w.signals.is_empty() and w.clock_hours() < 6.01:
+					w.place_signal_at(pl, pv)
+					w.waves.clear()
+			var r: Dictionary = _eval_policy(pol1, seeds5b)
+			var line := "[1基のみ %s]" % name
+			for k in WINDOWS:
+				line += " %s:%d/%d/%d" % [k, r.mean[k], r.max[k], r.m95[k]]
+			print("%s 失敗%d/5 終了時ポイント%d" % [line, r.fails, r.points])
+	if "--policy" in args:
+		# 置きっぱなし（最良）と、山ごとに判断し直す疑似プレイヤーを、信号なしと比べる（種5つ）
+		var seeds5 := [Tuning.T_SEED, 11, 22, 33, 44]
+		var w4 := TownWorld.new()
+		var J := func(j, guard := false): return w4.placement_at(TownMap.junction_center(j), guard)
+		var school_guard: Dictionary = w4.placement_at(TownMap.line_point(2, 0.5), true)
+		var school_sig: Dictionary = w4.placement_at(TownMap.line_point(2, 0.5), false)
+		# 置きっぱなし: 決めた順に、100たまるたびに置く。一度置いたら触らない
+		var statics := {
+			"置きっぱなしA 交差点0→2→3": [J.call(0), J.call(2), J.call(3)],
+			"置きっぱなしB 交差点0→3→2": [J.call(0), J.call(3), J.call(2)],
+			"置きっぱなしC 交差点0→学校前→2": [J.call(0), school_sig, J.call(2)],
+		}
+		var results := {}
+		results["なし"] = _eval_policy(func(w, _h): pass, seeds5)
+		for name in statics:
+			var seq: Array = statics[name]
+			var pol_s := func(w, _h):
+				var idx: int = w.get_meta("idx", 0)
+				if idx < seq.size() and w.funds >= Tuning.SIGNAL_COST:
+					var t: Dictionary = w.placement_at((seq[idx] as Dictionary).pos)
+					if t.ok and w.place_signal_at(t, 0):
+						w.set_meta("idx", idx + 1)
+						w.waves.clear()
+			results[name] = _eval_policy(pol_s, seeds5)
+		# 判断し直す: 6時に交差点0、50たまったら学校前に誘導員、昼に交差点2・3、夜（20.5時）に信号を撤去
+		var pol_a := func(w, _h):
+			var h: float = w.clock_hours()
+			if h >= 6.0 and not w.has_meta("j0"):
+				var t0: Dictionary = w.placement_at(TownMap.junction_center(0))
+				if t0.ok and w.place_signal_at(t0, 0):
+					w.set_meta("j0", true)
+					w.waves.clear()
+			if h < 15.0 and not w.has_meta("guard") and w.funds >= Tuning.GUARD_COST:
+				var tg: Dictionary = w.placement_at(TownMap.line_point(2, 0.5), true)
+				if tg.ok and w.place_signal_at(tg, 1):
+					w.set_meta("guard", true)
+			if h >= 10.0 and h < 20.0 and not w.has_meta("j2") and w.funds >= Tuning.SIGNAL_COST:
+				var t2: Dictionary = w.placement_at(TownMap.junction_center(2))
+				if t2.ok and w.place_signal_at(t2, 0):
+					w.set_meta("j2", true)
+					w.waves.clear()
+			if h >= 12.0 and h < 20.0 and not w.has_meta("j3") and w.funds >= Tuning.SIGNAL_COST:
+				var t3: Dictionary = w.placement_at(TownMap.junction_center(3))
+				if t3.ok and w.place_signal_at(t3, 0):
+					w.set_meta("j3", true)
+					w.waves.clear()
+			if h >= 20.5 and not w.has_meta("night"):
+				w.set_meta("night", true)
+				for id in w.signals.keys():
+					if not w.signals[id].get("guard", false):
+						w.demolish_signal(id)
+		results["判断し直す"] = _eval_policy(pol_a, seeds5)
+		print("--- 種5つの平均（朝6.5-10／昼10-15／夕15-20／夜20-30。平均/最大/上限にいた分）---")
+		for name in results:
+			var r: Dictionary = results[name]
+			var line := "[%s]" % name
+			for k in WINDOWS:
+				line += " %s:%d/%d/%d" % [k, r.mean[k], r.max[k], r.m95[k]]
+			print("%s 失敗%d/5 決定%.1f 終了時ポイント%d 接触%d" % [line, r.fails, r.decisions, r.points, r.contacts])
 	if "--sweep" in args:
 		var w0 := TownWorld.new()
 		var cands := candidates(w0)

@@ -301,11 +301,11 @@ func set_ghost(on: bool, pl: Dictionary = {}) -> void:
 		_ghost_root.visible = false
 		_ghost_key = ""
 		return
-	var key := "%d:%s:%s" % [pl.kind, str(pl.get("j", -1)), str(pl.get("t", 0.0)) + "_" + str(pl.get("line", -1))]
+	var key := "%d:%s:%s:%s" % [pl.kind, str(pl.get("j", -1)), str(pl.get("t", 0.0)) + "_" + str(pl.get("line", -1)), str(pl.get("guard", false))]
 	if key != _ghost_key:
 		for c in _ghost_root.get_children():
 			c.queue_free()
-		var sg := {"kind": pl.kind, "j": pl.get("j", -1), "line": pl.get("line", -1), "t": pl.get("t", 0.0), "pos": pl.pos}
+		var sg := {"kind": pl.kind, "j": pl.get("j", -1), "line": pl.get("line", -1), "t": pl.get("t", 0.0), "pos": pl.pos, "guard": pl.get("guard", false)}
 		_make_signal_visual(sg, true, _ghost_root)
 		_ghost_key = key
 	_ghost_root.visible = true
@@ -317,12 +317,16 @@ func _make_signal_visual(sg: Dictionary, ghost: bool, parent: Node3D) -> Diction
 	var root := Node3D.new()
 	parent.add_child(root)
 	var a := 0.5 if ghost else 1.0
+	var guard: bool = sg.get("guard", false)
 	var white := _mat(C_WHITE, a)
 	var polem := _mat(Color(0.3, 0.3, 0.32), a)
 	var car_lamps: Array = []
 	var ped_lamps: Array = []
+	var stripes: Array = []         # 誘導員が立っていない間は隠す（横断歩道と停止線）
+	var spot := Vector2.ZERO        # 誘導員の立つ場所
 	if sg.kind == 0:
 		var c := TownMap.junction_center(sg.j)
+		spot = c + Vector2(1.7, 1.7)
 		for arm in 4:
 			var av: Vector2 = Geo.ARMS[arm]
 			var cw := c + av * 2.5
@@ -330,10 +334,12 @@ func _make_signal_visual(sg: Dictionary, ghost: bool, parent: Node3D) -> Diction
 			for k in range(-2, 3):
 				var p := cw + across * (k * 0.4)
 				var sz := Vector3(1.0, 0.02, 0.2) if absf(av.x) > 0.5 else Vector3(0.2, 0.02, 1.0)
-				_box(root, sz, p, 0.09, white)
+				stripes.append(_box(root, sz, p, 0.09, white))
 			var sl := c + Geo.inbound_point(arm, Tuning.STOP_LINE_R)
 			var slz := Vector3(0.08, 0.02, 1.0) if absf(av.x) > 0.5 else Vector3(1.0, 0.02, 0.08)
-			_box(root, slz, sl, 0.09, white)
+			stripes.append(_box(root, slz, sl, 0.09, white))
+			if guard:
+				continue
 			var pp := c + av * 3.3 + Geo.left_of(-av) * 1.55
 			_box(root, Vector3(0.08, 1.1, 0.08), pp, 0.0, polem)
 			var head := _box(root, Vector3(0.22, 0.22, 0.22), pp, 1.1, _mat(Color.GREEN, a, true))
@@ -345,23 +351,47 @@ func _make_signal_visual(sg: Dictionary, ghost: bool, parent: Node3D) -> Diction
 		var t: float = sg.t
 		var p0 := TownMap.line_point(l, t)
 		var across := Vector2(0, 1) if TownMap.line_axis(l) == 0 else Vector2(1, 0)
+		spot = p0 + across * 1.6
 		for k in range(-2, 3):
 			var p := p0 + across * (k * 0.4)
 			var sz := Vector3(1.0, 0.02, 0.2) if TownMap.line_axis(l) == 0 else Vector3(0.2, 0.02, 1.0)
-			_box(root, sz, p, 0.09, white)
+			stripes.append(_box(root, sz, p, 0.09, white))
 		for sign in [1, -1]:
 			var hd := TownMap.hd_of(l, sign)
 			var sp := TownMap.lane_point(l, t - sign * 0.75, hd)
 			var slz := Vector3(0.08, 0.02, 1.0) if TownMap.line_axis(l) == 0 else Vector3(1.0, 0.02, 0.08)
-			_box(root, slz, sp, 0.09, white)
-		for side in [-1.0, 1.0]:
-			var pp: Vector2 = p0 + across * (side * 1.55)
-			_box(root, Vector3(0.08, 1.1, 0.08), pp, 0.0, polem)
-			var head := _box(root, Vector3(0.22, 0.22, 0.22), pp, 1.1, _mat(Color.GREEN, a, true))
-			var ped := _box(root, Vector3(0.14, 0.14, 0.14), pp, 0.7, _mat(Color.RED, a, true))
-			car_lamps.append([head.material_override, -1])
-			ped_lamps.append([ped.material_override, -1])
-	return {"root": root, "car": car_lamps, "ped": ped_lamps}
+			stripes.append(_box(root, slz, sp, 0.09, white))
+		if not guard:
+			for side in [-1.0, 1.0]:
+				var pp: Vector2 = p0 + across * (side * 1.55)
+				_box(root, Vector3(0.08, 1.1, 0.08), pp, 0.0, polem)
+				var head := _box(root, Vector3(0.22, 0.22, 0.22), pp, 1.1, _mat(Color.GREEN, a, true))
+				var ped := _box(root, Vector3(0.14, 0.14, 0.14), pp, 0.7, _mat(Color.RED, a, true))
+				car_lamps.append([head.material_override, -1])
+				ped_lamps.append([ped.material_override, -1])
+	var person: Node3D = null
+	var post: Node3D = null
+	if guard:
+		# 誘導員: 橙のベスト、黄色い帽子、赤い旗。立っていない間は、小さな目印（柱）だけ
+		person = Node3D.new()
+		root.add_child(person)
+		_box(person, Vector3(0.3, 0.55, 0.3), spot, 0.0, _mat(Color(1.0, 0.55, 0.1), a))
+		var hd_m := MeshInstance3D.new()
+		var sph := SphereMesh.new()
+		sph.radius = 0.12
+		sph.height = 0.24
+		hd_m.mesh = sph
+		hd_m.material_override = _mat(Color(0.96, 0.8, 0.66), a)
+		hd_m.position = Vector3(spot.x, 0.67, spot.y)
+		person.add_child(hd_m)
+		_box(person, Vector3(0.3, 0.06, 0.3), spot, 0.74, _mat(Color(1.0, 0.9, 0.2), a))
+		_box(person, Vector3(0.04, 0.8, 0.04), spot + Vector2(0.24, 0), 0.0, _mat(Color(0.9, 0.9, 0.9), a))
+		_box(person, Vector3(0.3, 0.2, 0.03), spot + Vector2(0.38, 0), 0.62, _mat(Color(0.9, 0.15, 0.1), a))
+		post = Node3D.new()
+		root.add_child(post)
+		_box(post, Vector3(0.1, 0.8, 0.1), spot, 0.0, _mat(Color(0.5, 0.5, 0.52), a))
+		_box(post, Vector3(0.24, 0.1, 0.24), spot, 0.8, _mat(Color(1.0, 0.85, 0.2), a))
+	return {"root": root, "car": car_lamps, "ped": ped_lamps, "stripes": stripes, "person": person, "post": post}
 
 func _sync_signals() -> void:
 	for id in _sig_nodes.keys():
@@ -373,6 +403,12 @@ func _sync_signals() -> void:
 			_sig_nodes[id] = _make_signal_visual(sim.signals[id], false, self)
 		var sg: Dictionary = sim.signals[id]
 		var node: Dictionary = _sig_nodes[id]
+		if sg.get("guard", false):
+			var on: bool = sim.guard_active(id)
+			for st in node.stripes:
+				st.visible = on
+			node.person.visible = on
+			node.post.visible = not on
 		for e in node.car:
 			var st := sim.car_light_of(sg, e[1])
 			(e[0] as StandardMaterial3D).albedo_color = Color(0.1, 0.95, 0.3) if st == 0 else (Color(1.0, 0.8, 0.1) if st == 1 else Color(1.0, 0.15, 0.1))

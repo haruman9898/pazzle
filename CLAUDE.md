@@ -27,7 +27,7 @@
 - `tools/build_web.sh` — Web 書き出し（`build/web/`）とサイズ表示
 - `tools/make_font.sh` — UI 用日本語フォントの部分抽出（Web ではシステムフォントが使えない。UI の文言を変えたら再実行）
 - `game/tests/sim_test.gd` — 1交差点の回帰テスト（接触ゼロ・ゲージ・ヒヤリ。基準: 信号なし87.8／普通61.0）。1交差点側のロジックを変えたら必ず実行
-- `game/tests/stage1_test.gd` — ステージ1（1日 6:00→翌6:00）の検証。`godot --headless --script res://tests/stage1_test.gd -- --none`（信号なし）／`--key`（主要な置き方の比較）／`--play`（疑似プレイヤー）／`--sweep`（置く場所の総当たり。候補数は検証する）／`--traj`（1日の推移）。ステージ1側を変えたら実行
+- `game/tests/stage1_test.gd` — ステージ1（1日 6:00→翌6:00）の検証。`godot --headless --script res://tests/stage1_test.gd -- --none`（信号なし）／`--key`（主要な置き方の比較）／`--play`（疑似プレイヤー）／`--sweep`（置く場所の総当たり。候補数は検証する）／`--traj`（1日の推移）／`--one`（信号1基）／`--policy`（5 シードの方針比較）。ステージ1側を変えたら実行
 - ステージ1（`scripts/sim/town_map.gd`, `town_world.gd`, `scripts/view/town_view.gd`）が **通常のURLで開く**。1交差点の旧マップは `?map=legacy`。確認用: `?debug=1`（24時間・雨のボタン）、`&t=<時刻>`、`&rain=1`、`&result=fail|clear`（結果画面の確認）
 - 通貨は「開発ポイント」（「資金」は使わない）。開始100
 - `build/` は git 管理外
