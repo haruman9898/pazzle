@@ -64,7 +64,7 @@ const PED_SAFETY_MARGIN := 0.6
 
 # ---- 信号機 ----
 const SIGNAL_COST := 100
-const START_FUNDS := 300
+const START_FUNDS := 100
 const DEMOLISH_REFUND_RATE := 0.5
 ## 間隔プリセット（TBD・初期値）: 1方向あたりの青の長さ（シム秒）
 const SIGNAL_PRESET_LABELS := ["短い", "普通", "長い"]
@@ -122,14 +122,15 @@ const EVENING_PEAK_RATIO := 0.8
 # ---- 第3弾: ステージ1の地図（試作で置いた初期値）----
 ## 建物から出る人の予定表（予報どおりに確定。毎回同じ）
 const T_SEED := 20261124
-const T_COMMUTERS_PER_HOME := 10     # 通勤者（家→オフィス。朝）
-const T_CHILDREN_PER_HOME := 22      # 児童（家→学校。朝）
+## 通勤者・児童の人数（家の建物番号 → 人数）。学校の隣の家（3番）を多くして、学校前に車と児童の流れを重ねる
+const T_COMMUTERS := {0: 7, 3: 14, 6: 7, 7: 5, 8: 5}
+const T_CHILDREN := {0: 22, 3: 44, 6: 22, 7: 22, 8: 22}
 const T_SHOPPERS_PER_HOME := 3       # 買い物客（家→商店。昼）
 const T_COMMUTE_MORNING := [6.9, 9.0]
 const T_COMMUTE_EVENING := [17.0, 19.3]
 const T_SCHOOL_GO := [7.3, 8.5]
 const T_SCHOOL_BACK := [15.0, 16.5]
-const T_SHOP_GO := [9.5, 15.5]
+const T_SHOP_GO := [10.0, 15.0]
 const T_SHOP_BACK := [11.0, 17.5]
 ## 手段: 家からオフィスまでの距離（マス）で車の割合が変わる
 const T_CAR_DIST_MIN := 6.0
@@ -138,19 +139,52 @@ const T_CAR_SHARE_MIN := 0.25
 const T_CAR_SHARE_MAX := 0.9
 ## 通過交通（ランダム。量だけが毎ループ少し変わる）
 const T_THROUGH_CAR_BASE := 0.10
-const T_THROUGH_CAR_PEAK := 0.35
+const T_THROUGH_CAR_PEAK := 1.3
 const T_THROUGH_PED_BASE := 0.03
 const T_THROUGH_PED_PEAK := 0.08
 ## 信号の連動（自動）
 const T_LINK_DIST := 20.0            # この距離（マス）以内の信号同士が、同じ道路・同じ間隔でつながる
-const T_XWALK_MIN_FROM_JUNCTION := 5.0
+const T_XWALK_MIN_FROM_JUNCTION := 4.0
 const T_XWALK_MIN_GAP := 3.5
 ## 車が長く止まり続けたときの救済（完全な詰まりを避ける）
 const T_BREAKER_WAIT := 20.0
 ## ステージ1の試作ループ（ゲーム内時刻）。渋滞のピークがループの中に収まるよう、朝〜昼前まで
 const T_LOOP_START := 6.0
-const T_LOOP_END := 12.0
+const T_LOOP_END := 30.0   # 1日は 6:00 → 翌6:00（24時間）
 ## 連動のずれの計算: 信号から信号までの実効の速さ（停止からの発進と交差点内の減速を含む。実測で約2.3）
 const T_WAVE_SPEED := 2.3
 ## 連動で優先する向き: この時間帯（朝の通勤）の車が多い向き
 const T_FAV_WINDOW := [6.5, 9.5]
+
+# ---- ステージ1試作 第1回（2026-11-25）----
+## 不満度ゲージ（ステージ1）: 不満が高い上位K人の平均（空きは0）。旧式（合計÷max(人数,25)）からの変更
+const T_GAUGE_K := 20
+## 自転車（車に「自転車フラグ」を足したもの。車線は車と共有。専用レーンは作らない）
+const BIKE_SPEED := 2.2
+const BIKE_ACCEL := 2.5
+const BIKE_LENGTH := 0.5
+const BIKE_WIDTH := 0.22
+const T_BIKE_SHARE := 0.30          # 車に乗らない通勤者・買い物客のうち、自転車の割合
+## 夜の通過交通（夜の山。夕の山の続き）
+const T_THROUGH_CAR_NIGHT := 0.5
+const T_NIGHT_PEAK_H := 23.0
+const T_NIGHT_PEAK_W := 1.6
+## 不満バブル（第1回は出現ロジックだけ。回収は暫定の自動回収。第2回でタップに置き換える）
+const T_BUBBLE_VALUE := 10          # 1個あたりの開発ポイント
+const T_BUBBLE_CAP := 4             # 同時表示の上限
+const T_BUBBLE_LIFE := [4.0, 6.0]   # 寿命（実時間・秒）。速度設定に連動しない
+const T_BUBBLE_WAIT := 2.0          # 待ちがこの秒数（シム秒 ≒ ゲーム内10分）を超えた人から出る
+const T_BUBBLE_COOLDOWN := 25.0     # 同じ人から再び出るまで（シム秒）
+const T_BUBBLE_RATE := 0.9          # 出現率の基準（1/実時間秒）。待っている人が4人以上で最大
+const T_BUBBLE_DECAY := 100.0       # 出現総数がこの数で、出現率が半分になる（自己調整）
+const T_BUBBLE_BOOST := 1.6         # 開発ポイントが尽きて停滞したときの補助
+const T_BUBBLE_AUTO := 0.85         # 暫定の自動回収で、回収される割合
+## 通過交通の入口の重み（地図の端 8か所: 横道z=-6の西・東、横道z=6の西・東、縦道x=-6の北・南、縦道x=6の北・南）。
+## 学校の前を通る縦道（x=-6）を幹線道路にして、学校前で児童の横断と車がぶつかるようにする
+const T_EDGE_WEIGHT := [1.0, 1.0, 1.0, 1.0, 4.0, 4.0, 1.0, 1.0]
+const T_THROUGH_SKIP := 0.12      # 通過交通の予定のうち、ループごとに間引く割合（量だけが少し変わる）
+const T_D_SCALE := 4.5            # ステージ1で、不満のたまる速さ（待ち・遅れ）にかける倍率（難易度の調整用）
+## ステージ1の「上限」: 上位20人の平均が、100ちょうどに張りつくのは現実的でないため、95以上を上限とみなす（仕様の100からの変更。初期値）
+const T_GAUGE_LIMIT := 95.0
+const T_D_RED_CAR := 1.0           # 赤信号で待つ車の不満のたまる速さ（渋滞は D_WAIT_CAR = 5）
+const T_D_RED_PED := 1.0           # 赤信号で待つ歩行者の不満のたまる速さ（車の切れ目待ちは D_WAIT_PED = 6 に倍率）

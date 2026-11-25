@@ -2,13 +2,13 @@ class_name TownMap
 extends RefCounted
 ## ステージ1の地図（交差点4つ）。純ロジック（見た目に依存しない）。
 ## 座標は地面の (x, z) を Vector2(x, y) で表す。1マス = 1 = 現実の約3m。
-## 道路の中心線は x=±8（縦道）と z=±8（横道）。左側通行。
+## 道路の中心線は x=±6（縦道）と z=±6（横道）。左側通行。
 ##
 ## 方向（heading）: 0=東(+x) 1=西(-x) 2=北(-z) 3=南(+z)  … Geo.ARMS と同じ並び
 
-const EXT := 18                  # 地図は -18〜18
-const N := 36                    # セル数
-const ROADS := [-8.0, 8.0]
+const EXT := 15                  # 地図は -15〜15
+const N := 30                    # セル数
+const ROADS := [-6.0, 6.0]       # 交差点の間隔 12マス（ステージ1。街を小さく密にする）
 const ROAD_HALF := 1.0
 const LANE := 0.5
 const WALK := 1.5
@@ -17,15 +17,15 @@ const LINE_COUNT := 4
 
 ## 建物: type / rect(x0,z0,幅,奥行) / height / door(歩道上の出入口) / line,t(車の出入口が接する道路と位置)
 const BUILDINGS := [
-	{"type": "home", "rect": Rect2(-17, -17, 6, 6), "height": 1.3, "door": Vector2(-13.5, -9.5), "line": 0, "t": -13.5},
-	{"type": "shop", "rect": Rect2(-4, -16, 8, 5), "height": 1.0, "door": Vector2(0.5, -9.5), "line": 0, "t": 0.5},
-	{"type": "office", "rect": Rect2(11, -17, 6, 6), "height": 3.2, "door": Vector2(13.5, -9.5), "line": 0, "t": 13.5},
-	{"type": "home", "rect": Rect2(-17, -4, 6, 8), "height": 1.3, "door": Vector2(-9.5, 0.5), "line": 2, "t": 0.5},
-	{"type": "school", "rect": Rect2(-5, -5, 10, 10), "height": 1.5, "door": Vector2(-6.5, 0.5), "line": 2, "t": 0.5},
-	{"type": "shop", "rect": Rect2(11, -4, 6, 8), "height": 1.0, "door": Vector2(9.5, 0.5), "line": 3, "t": 0.5},
-	{"type": "home", "rect": Rect2(-17, 11, 6, 6), "height": 1.3, "door": Vector2(-13.5, 9.5), "line": 1, "t": -13.5},
-	{"type": "home", "rect": Rect2(-4, 11, 8, 6), "height": 1.3, "door": Vector2(0.5, 9.5), "line": 1, "t": 0.5},
-	{"type": "home", "rect": Rect2(11, 11, 6, 6), "height": 1.3, "door": Vector2(13.5, 9.5), "line": 1, "t": 13.5},
+	{"type": "home", "rect": Rect2(-14, -14, 5, 5), "height": 1.3, "door": Vector2(-11.5, -7.5), "line": 0, "t": -11.5},
+	{"type": "shop", "rect": Rect2(-3, -13, 6, 4), "height": 1.0, "door": Vector2(0.5, -7.5), "line": 0, "t": 0.5},
+	{"type": "office", "rect": Rect2(9, -14, 5, 5), "height": 3.2, "door": Vector2(11.5, -7.5), "line": 0, "t": 11.5},
+	{"type": "home", "rect": Rect2(-14, -3, 5, 6), "height": 1.3, "door": Vector2(-7.5, 0.5), "line": 2, "t": 0.5},
+	{"type": "school", "rect": Rect2(-3, -3, 6, 6), "height": 1.5, "door": Vector2(-4.5, 0.5), "line": 2, "t": 0.5},
+	{"type": "shop", "rect": Rect2(9, -3, 5, 6), "height": 1.0, "door": Vector2(7.5, 0.5), "line": 3, "t": 0.5},
+	{"type": "home", "rect": Rect2(-14, 9, 5, 5), "height": 1.3, "door": Vector2(-11.5, 7.5), "line": 1, "t": -11.5},
+	{"type": "home", "rect": Rect2(-3, 9, 6, 4), "height": 1.3, "door": Vector2(0.5, 7.5), "line": 1, "t": 0.5},
+	{"type": "home", "rect": Rect2(9, 9, 5, 5), "height": 1.3, "door": Vector2(11.5, 7.5), "line": 1, "t": 11.5},
 ]
 
 # ---------------------------------------------------------------------
@@ -84,7 +84,7 @@ static func lane_point(l: int, t: float, hd: int) -> Vector2:
 
 ## 道路 l を向き sign に進むとき、位置 t の次の節点: {coord, junction（境界なら -1）}
 static func ahead(l: int, t: float, sign: int) -> Dictionary:
-	var nodes := [-float(EXT), -8.0, 8.0, float(EXT)]
+	var nodes := [-float(EXT), ROADS[0], ROADS[1], float(EXT)]
 	if sign > 0:
 		for c in nodes:
 			if c > t + 0.001:
@@ -96,7 +96,7 @@ static func ahead(l: int, t: float, sign: int) -> Dictionary:
 	return {"coord": t, "junction": -1}
 
 static func _node_junction(l: int, c: float) -> int:
-	if absf(c) > 9.0:
+	if absf(c) > ROADS[1] + 1.0:
 		return -1
 	var k := 0 if c < 0.0 else 1
 	if line_axis(l) == 0:

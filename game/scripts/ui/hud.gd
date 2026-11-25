@@ -1,7 +1,7 @@
 class_name Hud
 extends CanvasLayer
 ## 画面 UI（最小限）。ボタン操作はシグナルで main に伝える。
-## 上部バー: 時計／不満度ゲージ／ヒヤリ件数／残り資金／速度切替（右上）
+## 上部バー: 時計／不満度ゲージ／ヒヤリ件数／開発ポイント／速度切替（右上）
 ## 右下の3本線ボタン → 設置パネル（Coffee Inc方式で右からスライドイン）
 
 signal speed_selected(index: int)
@@ -17,6 +17,7 @@ signal popup_closed
 signal home_pressed
 signal mode_toggled(is_24h: bool)
 signal rain_toggled(on: bool)
+signal result_pressed
 
 const PANEL_W := 390.0
 const BAR_H := 68.0
@@ -34,6 +35,11 @@ var home_button: Button
 var mode_button: Button
 var rain_button: Button
 var info_card: PanelContainer
+var result_panel: PanelContainer
+var result_title: Label
+var result_body: VBoxContainer
+var result_button: Button
+var auto_note: Label
 var info_box: VBoxContainer
 
 ## 不満の理由: [キー, 表示名, 色]
@@ -73,6 +79,21 @@ func _ready() -> void:
 	_build_place_bar(root)
 	_build_popup(root)
 	_build_info_card(root)
+	_build_result(root)
+	auto_note = Label.new()
+	auto_note.text = "バブルは暫定で自動回収（タップは第2回）"
+	auto_note.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	auto_note.offset_left = -470
+	auto_note.offset_right = -12
+	auto_note.offset_top = BAR_H + 70
+	auto_note.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	auto_note.add_theme_font_size_override("font_size", 16)
+	auto_note.add_theme_color_override("font_color", Color(1.0, 0.9, 0.5, 0.9))
+	auto_note.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
+	auto_note.add_theme_constant_override("outline_size", 4)
+	auto_note.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	auto_note.visible = false
+	root.add_child(auto_note)
 	debug_label = Label.new()
 	debug_label.position = Vector2(12, BAR_H + 8)
 	debug_label.add_theme_font_size_override("font_size", 22)
@@ -148,7 +169,7 @@ func _build_top_bar(root: Control) -> void:
 	hiyari_label.custom_minimum_size = Vector2(124, 0)
 	hb.add_child(hiyari_label)
 	funds_label = Label.new()
-	funds_label.custom_minimum_size = Vector2(136, 0)
+	funds_label.custom_minimum_size = Vector2(210, 0)
 	hb.add_child(funds_label)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -360,10 +381,10 @@ func update_bar(clock_h: float, gauge: float, hiyari: int, funds: int) -> void:
 	var fill: StyleBoxFlat = gauge_bar.get_theme_stylebox("fill")
 	fill.bg_color = Color(0.3, 0.8, 0.4).lerp(Color(0.95, 0.25, 0.2), clampf(gauge / 100.0, 0.0, 1.0))
 	hiyari_label.text = "ヒヤリ %d" % hiyari
-	funds_label.text = "資金 %d" % funds
+	funds_label.text = "開発ポイント %d" % funds
 
 func open_panel(funds: int, can_signal: bool) -> void:
-	panel_funds.text = "残り資金 %d" % funds
+	panel_funds.text = "残り開発ポイント %d" % funds
 	signal_item.text = "  信号機　　費用 %d" % Tuning.SIGNAL_COST
 	signal_item.disabled = not can_signal
 	panel.visible = true
@@ -501,3 +522,46 @@ func _legend_row(name: String, color: Color, frac: float, value: String) -> Cont
 
 func hide_info() -> void:
 	info_card.visible = false
+
+
+# ---------------------------------------------------------------------
+# 結果（クリア／失敗）の表示。第3回で、★・事後診断・ダイジェストまで一続きにする
+# ---------------------------------------------------------------------
+func _build_result(root: Control) -> void:
+	result_panel = PanelContainer.new()
+	result_panel.set_anchors_preset(Control.PRESET_CENTER)
+	result_panel.offset_left = -330
+	result_panel.offset_right = 330
+	result_panel.offset_top = -210
+	result_panel.offset_bottom = 210
+	result_panel.visible = false
+	root.add_child(result_panel)
+	var vb := VBoxContainer.new()
+	vb.add_theme_constant_override("separation", 14)
+	result_panel.add_child(vb)
+	result_title = _lbl("", 44)
+	result_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vb.add_child(result_title)
+	result_body = VBoxContainer.new()
+	result_body.add_theme_constant_override("separation", 8)
+	vb.add_child(result_body)
+	var sp := Control.new()
+	sp.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_child(sp)
+	result_button = Button.new()
+	result_button.custom_minimum_size = Vector2(0, 72)
+	result_button.focus_mode = Control.FOCUS_NONE
+	result_button.pressed.connect(func(): result_pressed.emit())
+	vb.add_child(result_button)
+
+func show_result(title: String, lines: Array, button: String) -> void:
+	result_title.text = title
+	for c in result_body.get_children():
+		c.queue_free()
+	for l in lines:
+		result_body.add_child(_lbl(l, 24))
+	result_button.text = button
+	result_panel.visible = true
+
+func hide_result() -> void:
+	result_panel.visible = false

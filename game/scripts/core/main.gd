@@ -3,12 +3,13 @@ extends Node3D
 ## 状態: PLAY（時間が進む）/ MENU（設置パネル）/ PLACE（配置）/ POPUP（設備）
 ## PLAY 以外では時間が止まる（仕様 3章）。
 
-enum State { PLAY, MENU, PLACE, POPUP }
+enum State { PLAY, MENU, PLACE, POPUP, RESULT }
 
 const TAP_MAX_MOVE := 12.0      # これ以下の移動で離せばタップ
 const LONG_PRESS := 0.35        # 長押し判定（秒）。長押し後のドラッグ = 回転
 
-var town := false               # ステージ1（交差点4つ）。URL に ?map=stage1 を付けると有効
+var town := true                # ステージ1（交差点4つ）。URL に ?map=legacy を付けると、1交差点の旧マップ
+var debug := false              # URL に ?debug=1 を付けると、確認用のボタン（24時間・雨）を出す
 var sim                         # SimWorld（1交差点）または TownWorld（ステージ1）
 var view                        # WorldView または TownView
 var popup_id := -1              # 設備ポップアップで開いている信号
@@ -38,16 +39,21 @@ var _rmb := false
 
 ## 町の地図の立ち話の場所 [x, z, 向き, 開始時刻, 終了時刻]（建物の外の芝生の縁）
 const TOWN_CHAT := [
-	[-12.0, -10.4, 1, 6.0, 21.0], [3.0, -10.4, 1, 9.0, 17.0], [14.5, -10.4, 1, 6.5, 20.5], [-10.4, 3.0, 0, 9.5, 17.0],
-	[10.4, -3.0, 0, 17.0, 21.0], [-12.0, 10.4, 1, 9.5, 17.0], [3.0, 10.4, 1, 10.0, 16.5], [14.5, 10.4, 1, 17.5, 20.5],
+	[-11.5, -8.5, 1, 6.0, 21.0], [0.5, -8.5, 1, 9.0, 17.0], [11.5, -8.5, 1, 6.5, 20.5], [-8.5, 0.5, 0, 9.5, 17.0],
+	[8.5, -2.5, 0, 17.0, 21.0], [-11.5, 8.5, 1, 9.5, 17.0], [0.5, 8.5, 1, 10.0, 16.5], [11.5, 8.5, 1, 17.5, 20.5],
 ]
 
 func _ready() -> void:
 	var map_param = null
+	var debug_param = null
 	if OS.has_feature("web"):
 		map_param = JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('map')")
-	town = map_param != null and str(map_param) == "stage1"
+		debug_param = JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('debug')")
+	town = not (map_param != null and str(map_param) == "legacy")
+	debug = debug_param != null and str(debug_param) == "1"
 	sim = TownWorld.new() if town else SimWorld.new()
+	if town:
+		sim.auto_loop = false
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
 	environment = e
@@ -72,8 +78,8 @@ func _ready() -> void:
 	rig = CameraRig.new()
 	add_child(rig)
 	if town:
-		rig.configure(34.0, 46.0, 14.0)
-		agents.configure(26.0, TOWN_CHAT)
+		rig.configure(22.0, 34.0, 10.0)
+		agents.configure(20.0, TOWN_CHAT)
 	hud = Hud.new()
 	add_child(hud)
 	hud.speed_selected.connect(func(i): speed_index = i)
@@ -89,24 +95,35 @@ func _ready() -> void:
 	hud.popup_demolish.connect(_demolish)
 	hud.popup_closed.connect(_close_popup)
 	hud.home_pressed.connect(func(): rig.go_home())
+	hud.result_pressed.connect(_retry)
+	hud.mode_button.visible = debug
+	hud.rain_button.visible = debug
+	hud.auto_note.visible = town
 	hud.mode_toggled.connect(_on_mode_toggled)
 	hud.rain_toggled.connect(_on_rain_toggled)
 	_build_light_keys()
 	_read_url_params()
 
 func _process(delta: float) -> void:
+	if state == State.PLAY and town and (sim.fail_reached or sim.day_over):
+		_show_result()
 	if state == State.PLAY:
-		_acc += delta * Tuning.SPEED_MULTS[speed_index]
+		var mult: float = Tuning.SPEED_MULTS[speed_index]
+		_acc += delta * mult
 		var n := 0
 		var t0 := Time.get_ticks_usec()
 		while _acc >= Tuning.SIM_DT and n < 8:
-			sim.step(Tuning.SIM_DT)
+			if town:
+				sim.step(Tuning.SIM_DT, Tuning.SIM_DT / mult)
+			else:
+				sim.step(Tuning.SIM_DT)
 			_acc -= Tuning.SIM_DT
 			n += 1
 		if n == 8:
 			_acc = 0.0
 		_sim_ms = lerpf(_sim_ms, (Time.get_ticks_usec() - t0) / 1000.0, 0.1)
-	hud.update_bar(sim.clock_hours(), sim.gauge, sim.hiyari_total, sim.funds)
+	var hour := fposmod(sim.clock_hours(), 24.0)
+	hud.update_bar(hour, sim.gauge, sim.hiyari_total, sim.funds)
 	var stopped := state == State.MENU or state == State.PLACE
 	if stopped != _was_stopped:
 		_was_stopped = stopped
@@ -115,9 +132,58 @@ func _process(delta: float) -> void:
 			hud.show_info(sim.cause_totals())
 		else:
 			hud.hide_info()
-	_apply_light(sim.clock_hours())
-	hud.set_paused(state != State.PLAY)
+	_apply_light(hour)
+	hud.set_paused(state != State.PLAY and state != State.RESULT)
+	if state == State.RESULT:
+		hud.menu_button.visible = false
+		hud.paused_label.visible = false
 	_update_debug()
+
+## クリア／失敗の結果（第1回は簡易。第3回で★・事後診断・ダイジェストまで一続きにする）
+func _show_result() -> void:
+	state = State.RESULT
+	_close_overlays()
+	var lines: Array = []
+	var title := "クリア！"
+	if sim.fail_reached:
+		title = "失敗…"
+		var fh := fposmod(sim.fail_clock, 24.0)
+		lines.append("%d:%02d ごろ、%s で、不満が上限に達しました" % [int(fh), int(fmod(fh, 1.0) * 60.0), _place_name(sim.fail_pos)])
+		lines.append("そのまま2時間、上限が続きました")
+	else:
+		lines.append("24時間を、乗り切りました")
+	lines.append("最大の不満度 %d ／ ヒヤリ %d 件" % [int(sim.max_gauge), sim.hiyari_total])
+	lines.append("開発ポイント %d（バブル %d 個を回収）" % [sim.funds, sim.bubble_stats.collected])
+	hud.show_result(title, lines, "もう一度（速度はそのまま）")
+
+func _close_overlays() -> void:
+	hud.hide_popup()
+	hud.hide_place_bar()
+	hud.close_panel()
+	view.set_ghost(false)
+	view.set_highlight(false)
+
+## 同じステージを最初から。速度設定（speed_index）は変えない
+func _retry() -> void:
+	hud.hide_result()
+	sim.restart()
+	state = State.PLAY
+
+func _place_name(p: Vector2) -> String:
+	var jp := {"home": "住宅", "shop": "商店", "office": "オフィス", "school": "小学校"}
+	var best := "街"
+	var bd := 1e9
+	for b in TownMap.BUILDINGS:
+		var d: float = (b.door as Vector2).distance_to(p)
+		if d < bd:
+			bd = d
+			best = jp[b.type] + "の前"
+	for j in 4:
+		var d2: float = TownMap.junction_center(j).distance_to(p) - 2.0
+		if d2 < bd:
+			bd = d2
+			best = "交差点"
+	return best
 
 func _update_debug() -> void:
 	var t := ("ステージ1 " if town else "") + "FPS %d | シム %.1fms 描画更新 %.1fms | 車 %d / 歩行者 %d | 横断: 無断 %d / 横断歩道 %d | 上限継続 %d分%s" % [
@@ -225,6 +291,15 @@ func _read_url_params() -> void:
 		sim.clock_s = clampf(float(str(t)), 0.0, 23.99) * 3600.0
 	if r != null and str(r) == "1":
 		hud.rain_button.button_pressed = true
+	# 結果画面の確認用（?debug=1&result=fail / clear）
+	var res = JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('result')")
+	if debug and town and res != null:
+		if str(res) == "fail":
+			sim.fail_reached = true
+			sim.fail_clock = 9.0
+			sim.fail_pos = Vector2(-6.0, 0.5)
+		elif str(res) == "clear":
+			sim.day_over = true
 
 func _on_rain_toggled(on: bool) -> void:
 	raining = on

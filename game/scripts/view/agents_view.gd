@@ -46,6 +46,8 @@ var _p_acc: MultiMesh
 var _p_hat: MultiMesh
 var _p_arm: MultiMesh
 var _p_umb: MultiMesh
+var _bub_mm: MultiMesh
+var _bub_core: MultiMesh
 var _rain_mm: MultiMesh
 var _rain_node: MultiMeshInstance3D
 var _rain_pos := PackedVector3Array()
@@ -77,6 +79,13 @@ func setup(s) -> void:
 	cone.height = 1.0
 	cone.radial_segments = 10
 	cone.rings = 1
+	# 不満バブル（外側の半透明の玉と、中の赤い芯）
+	var bub := StandardMaterial3D.new()
+	bub.vertex_color_use_as_albedo = true
+	bub.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	bub.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_bub_mm = _mk(sph, 16, bub)
+	_bub_core = _mk(sph, 16, unlit)
 	_car_body = _mk(box, MAX_CARS, lit)
 	_car_cabin = _mk(box, MAX_CARS, lit)
 	_car_lamps = _mk(box, MAX_CARS * 4, unlit)
@@ -146,6 +155,7 @@ func _process(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()
 	_update_cars()
 	_update_people()
+	_update_bubbles()
 	if raining:
 		_update_rain(delta)
 	update_ms = lerpf(update_ms, (Time.get_ticks_usec() - t0) / 1000.0, 0.1)
@@ -166,6 +176,15 @@ func _update_cars() -> void:
 		var rot := Basis(Vector3.UP, atan2(-c.dir.y, c.dir.x))
 		var s: float = 1.0 + 0.5 * c.pulse
 		var base := Vector3(c.pos.x, 0.0, c.pos.y)
+		if c.get("bike") == true:
+			# 自転車: 細い車体（フレーム）と前後の灯り。乗っている人は _update_people で描く
+			_put(_car_body, i, base, rot, Vector3(0, 0.13, 0), Vector3(0.5, 0.07, 0.1), col.darkened(0.15), s)
+			_put(_car_cabin, i, base, rot, Vector3(0.18, 0.2, 0), Vector3(0.05, 0.22, 0.05), col.darkened(0.3), s)   # ハンドルの支柱
+			_put(_car_lamps, li, base, rot, Vector3(0.27, 0.2, 0), Vector3(0.04, 0.05, 0.06), front_col, s)
+			li += 1
+			_put(_car_lamps, li, base, rot, Vector3(-0.27, 0.16, 0), Vector3(0.04, 0.05, 0.06), rear_col, s)
+			li += 1
+			continue
 		var length := 0.8
 		var width := 0.42
 		var h := 0.22
@@ -200,6 +219,10 @@ func _update_people() -> void:
 	_ci = 0
 	_ari = 0
 	_ui = 0
+	# 自転車に乗っている人（座面の高さに乗せる）
+	for c in sim.cars:
+		if c.get("bike") == true and _bi < MAX_PEOPLE - 40:
+			_person(c.pos, c.dir, c.role, c.look, clampf(c.d / 100.0, 0.0, 1.0), c.pulse, 0.14, false, float(c.id), 1.0)
 	for p in sim.peds:
 		if _bi >= MAX_PEOPLE - 20:
 			break
@@ -281,6 +304,34 @@ func _update_chatters() -> void:
 		# 話すたびに少し頷く
 		_person(pa, da, role_a, look_a, 0.0, 0.0, 0.012 * (0.5 + 0.5 * sin(_t * 4.0 + ph)), false, ph, f)
 		_person(pb, db, role_b, look_b, 0.0, 0.0, 0.012 * (0.5 + 0.5 * sin(_t * 4.0 + ph + 2.0)), false, ph + 1.0, f)
+
+# ---------------------------------------------------------------------
+# 不満バブル: 待たされている人の頭上に浮かぶ。出てすぐ膨らみ、消える直前に縮む
+# ---------------------------------------------------------------------
+func _update_bubbles() -> void:
+	var list = sim.get("bubbles")
+	if list == null:
+		_bub_mm.visible_instance_count = 0
+		_bub_core.visible_instance_count = 0
+		return
+	var n := mini(list.size(), 16)
+	for i in n:
+		var b: Dictionary = list[i]
+		var a = b.agent
+		var grow := clampf(b.age / 0.25, 0.0, 1.0)
+		var left: float = b.life - b.age
+		var shrink := clampf(left / 1.0, 0.0, 1.0)
+		var sc: float = grow * shrink
+		var wob := sin(_t * 3.0 + float(b.id))
+		var pos := Vector3(a.pos.x + wob * 0.05, 1.25 + 0.08 * sin(_t * 4.0 + float(b.id)), a.pos.y)
+		var size := 0.62 * sc
+		_bub_mm.set_instance_transform(i, Transform3D(Basis.from_scale(Vector3(size, size, size)), pos))
+		_bub_mm.set_instance_color(i, Color(0.7, 0.9, 1.0, 0.55))
+		var core := 0.22 * sc
+		_bub_core.set_instance_transform(i, Transform3D(Basis.from_scale(Vector3(core, core, core)), pos))
+		_bub_core.set_instance_color(i, Color(0.95, 0.3, 0.2))
+	_bub_mm.visible_instance_count = n
+	_bub_core.visible_instance_count = n
 
 # ---------------------------------------------------------------------
 func _update_rain(delta: float) -> void:

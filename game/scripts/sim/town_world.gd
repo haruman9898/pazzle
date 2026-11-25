@@ -35,6 +35,16 @@ class Car:
 	var cause := {}
 	var pulse := 0.0
 	var look := 0
+	var role := 1
+	var bike := false
+	var vmax := 4.0
+	var accel := 4.0
+	var body_len := 0.8
+	var body_wid := 0.42
+	var bubble_ready_at := 0.0
+	var has_bubble := false
+	var forced_flag := false
+	var queue_orderly := false   # 赤信号待ちの車の後ろに並んでいる（秩序ある待ち）
 	var done := false
 
 	func length() -> float:
@@ -70,6 +80,8 @@ class Ped:
 	var pulse := 0.0
 	var role := 1
 	var look := 0
+	var bubble_ready_at := 0.0
+	var has_bubble := false
 	var done := false
 
 # ---------------------------------------------------------------------
@@ -102,6 +114,19 @@ var waves: Array = []
 var seed_base := Tuning.T_SEED
 var use_schedule := true          # 試験用: 予定表を使うか
 var through_scale := 1.0          # 試験用: 通過交通の量の倍率
+var auto_loop := true             # 試験用: 1日が終わったら最初から繰り返す（画面では false）
+var day_over := false
+var fail_clock := -1.0            # 失敗に達した時刻（時）
+var fail_pos := Vector2.ZERO      # そのときの、いちばん待ちがたまっていた場所
+var bubbles: Array = []           # 不満バブル {id, agent, age, life, auto_at}
+var bubble_stats := {"spawned": 0, "collected": 0, "missed": 0}
+var income_log: Array = []        # 収入の記録 [時刻(時), 開発ポイント]
+var decisions := 0                # 設置・間隔変更・取り壊しの回数
+var auto_collect := true          # 暫定: バブルを自動で回収する（第2回でタップに置き換える）
+var _bubble_acc := 0.0
+var _bubble_id := 1
+var _since_collect := 0.0
+var _bub_rng := RandomNumberGenerator.new()
 var linking := true               # 自動連動（試験で比べるためのスイッチ）
 
 # 信号
@@ -165,6 +190,13 @@ func reset_loop() -> void:
 	heat.clear()
 	waves.clear()
 	_held = [0, 0, 0, 0]
+	day_over = false
+	fail_clock = -1.0
+	bubbles.clear()
+	bubble_stats = {"spawned": 0, "collected": 0, "missed": 0}
+	income_log.clear()
+	_bubble_acc = 0.0
+	_since_collect = 0.0
 	_through_car_acc = 0.0
 	_through_ped_acc = 0.0
 	_sched_i = 0
@@ -175,9 +207,14 @@ func reset_loop() -> void:
 	_route_rng.seed = seed_base + 7
 	_misc_rng.seed = seed_base + 99
 	_look_rng.seed = seed_base + 555
+	_bub_rng.seed = seed_base + 4321
 
 func clock_hours() -> float:
 	return clock_s / 3600.0
+
+## 一日の中の時刻（0〜24）。1日は 6:00 → 翌6:00 なので、30時間目盛りを24で割った余り
+func hour_of_day() -> float:
+	return fposmod(clock_s / 3600.0, 24.0)
 
 # ---------------------------------------------------------------------
 # 予定表（建物から出る人。毎回同じ）
@@ -210,27 +247,53 @@ func _build_schedule() -> void:
 		rng.seed = Tuning.T_SEED + h * 131
 		var office: int = offices[0]
 		var school: int = schools[0]
-		# 通勤者（朝は家→オフィス、夕は逆）
+		# 通勤者（朝は家→オフィス、夕は逆）。手段は距離で決まる（遠いほど車が多い）。車でない人の一部は自転車
 		var share := clampf((_bdist(h, office) - Tuning.T_CAR_DIST_MIN) / Tuning.T_CAR_DIST_SPAN, Tuning.T_CAR_SHARE_MIN, Tuning.T_CAR_SHARE_MAX)
-		for i in Tuning.T_COMMUTERS_PER_HOME:
-			var by_car := rng.randf() < share
-			_add_trip(_sample_time(rng, Tuning.T_COMMUTE_MORNING), by_car, SimWorld.ROLE_COMMUTER, h, office)
-			_add_trip(_sample_time(rng, Tuning.T_COMMUTE_EVENING), by_car, SimWorld.ROLE_COMMUTER, office, h)
+		for i in Tuning.T_COMMUTERS.get(h, 5):
+			var mode := _pick_mode(rng, share)
+			_add_trip(_sample_time(rng, Tuning.T_COMMUTE_MORNING), mode, SimWorld.ROLE_COMMUTER, h, office)
+			_add_trip(_sample_time(rng, Tuning.T_COMMUTE_EVENING), mode, SimWorld.ROLE_COMMUTER, office, h)
 		# 児童（徒歩。朝は家→学校、午後は逆）
-		for i in Tuning.T_CHILDREN_PER_HOME:
-			_add_trip(_sample_time(rng, Tuning.T_SCHOOL_GO), false, SimWorld.ROLE_CHILD, h, school)
-			_add_trip(_sample_time(rng, Tuning.T_SCHOOL_BACK), false, SimWorld.ROLE_CHILD, school, h)
-		# 買い物客（昼。遠い商店には車）
+		for i in Tuning.T_CHILDREN.get(h, 12):
+			_add_trip(_sample_time(rng, Tuning.T_SCHOOL_GO), 0, SimWorld.ROLE_CHILD, h, school)
+			_add_trip(_sample_time(rng, Tuning.T_SCHOOL_BACK), 0, SimWorld.ROLE_CHILD, school, h)
+		# 買い物客（昼。遠い商店には車か自転車）
 		for i in Tuning.T_SHOPPERS_PER_HOME:
 			var shop: int = shops[rng.randi_range(0, shops.size() - 1)]
-			var by_car2 := _bdist(h, shop) > 22.0 and rng.randf() < 0.6
-			_add_trip(rng.randf_range(Tuning.T_SHOP_GO[0], Tuning.T_SHOP_GO[1]) * 3600.0, by_car2, SimWorld.ROLE_SHOPPER, h, shop)
-			_add_trip(rng.randf_range(Tuning.T_SHOP_BACK[0], Tuning.T_SHOP_BACK[1]) * 3600.0, by_car2, SimWorld.ROLE_SHOPPER, shop, h)
+			var far := _bdist(h, shop) > 14.0
+			var mode2 := _pick_mode(rng, 0.45 if far else 0.0)
+			_add_trip(rng.randf_range(Tuning.T_SHOP_GO[0], Tuning.T_SHOP_GO[1]) * 3600.0, mode2, SimWorld.ROLE_SHOPPER, h, shop)
+			_add_trip(rng.randf_range(Tuning.T_SHOP_BACK[0], Tuning.T_SHOP_BACK[1]) * 3600.0, mode2, SimWorld.ROLE_SHOPPER, shop, h)
+	# 通過交通（固定の予定表。量だけ、ループごとに少し間引く）。発生率は「シム秒あたり」
+	var trng := RandomNumberGenerator.new()
+	trng.seed = Tuning.T_SEED + 999
+	var acc_c := 0.0
+	var acc_p := 0.0
+	var dts := 0.5
+	var day_s := (Tuning.T_LOOP_END - Tuning.T_LOOP_START) * 3600.0 / Tuning.CLOCK_RATE
+	var tau := 0.0
+	while tau < day_s:
+		var game_s := Tuning.T_LOOP_START * 3600.0 + tau * Tuning.CLOCK_RATE
+		var hh := game_s / 3600.0
+		acc_c += _rate_at(hh, Tuning.T_THROUGH_CAR_BASE, Tuning.T_THROUGH_CAR_PEAK, Tuning.T_THROUGH_CAR_NIGHT) * dts
+		acc_p += _rate_at(hh, Tuning.T_THROUGH_PED_BASE, Tuning.T_THROUGH_PED_PEAK, 0.0) * dts
+		while acc_c >= 1.0:
+			acc_c -= 1.0
+			var a := _pick_edge_rng(trng, -1)
+			var b := _pick_edge_rng(trng, a)
+			_schedule.append({"t": game_s, "mode": 1, "role": SimWorld.ROLE_COMMUTER, "src": 100 + a, "dst": 100 + b, "tries": 0, "through": true})
+		while acc_p >= 1.0:
+			acc_p -= 1.0
+			var n := _edge_cells.size()
+			var a2 := trng.randi_range(0, n - 1)
+			var b2 := (a2 + trng.randi_range(1, n - 1)) % n
+			_schedule.append({"t": game_s, "mode": 0, "role": SimWorld.ROLE_COMMUTER, "src": 200 + a2, "dst": 200 + b2, "tries": 0, "through": true})
+		tau += dts
 	_schedule.sort_custom(func(a, b): return a.t < b.t)
 	# 道路ごとに、車の多い向きを決める（連動の向きに使う）
 	var tally := [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
 	for tr in _schedule:
-		if not tr.car:
+		if tr.mode != 1:
 			continue
 		if tr.t < Tuning.T_FAV_WINDOW[0] * 3600.0 or tr.t > Tuning.T_FAV_WINDOW[1] * 3600.0:
 			continue
@@ -243,8 +306,15 @@ func _build_schedule() -> void:
 	for l in 4:
 		fav_dir[l] = 1 if tally[l][1] >= tally[l][0] else -1
 
-func _add_trip(t: float, by_car: bool, role: int, src: int, dst: int) -> void:
-	_schedule.append({"t": t, "car": by_car, "role": role, "src": src, "dst": dst, "tries": 0})
+## 手段: 0=徒歩 1=車 2=自転車
+func _pick_mode(rng: RandomNumberGenerator, car_share: float) -> int:
+	var r := rng.randf()
+	if r < car_share:
+		return 1
+	return 2 if rng.randf() < Tuning.T_BIKE_SHARE else 0
+
+func _add_trip(t: float, mode: int, role: int, src: int, dst: int) -> void:
+	_schedule.append({"t": t, "mode": mode, "role": role, "src": src, "dst": dst, "tries": 0})
 
 # ---------------------------------------------------------------------
 # 車の経路
@@ -298,8 +368,9 @@ func _make_route(sl: int, st: float, dl: int, dt: float) -> Dictionary:
 			var q := center + curve[i]
 			acc += poly[poly.size() - 1].distance_to(q)
 			poly.append(q)
-		for i in range(curve.size() - 1):
-			quads |= Geo.quad_bit(curve[i].lerp(curve[i + 1], 0.5))
+		# 通る区画は、経路を細かく刻んで全部数える（直進は点が2つしかなく、真ん中だけだと反対側の区画を見落とす）
+		for q in Geo.resample(curve):
+			quads |= Geo.quad_bit(q)
 		jc.append({"j": j, "arm_in": arm_in, "s_box_in": s_in, "s_box_out": acc, "quads": quads,
 			"s_stop": s_in - (Tuning.STOP_LINE_R - TownMap.ROAD_HALF) - Tuning.CAR_LENGTH * 0.5,
 			"s_req": s_in - 0.05 - Tuning.CAR_LENGTH * 0.5, "state": 0})
@@ -390,7 +461,7 @@ func placement_at(g: Vector2) -> Dictionary:
 		var t := floorf(TownMap.line_coord(l, g)) + 0.5
 		if absf(t) > TownMap.EXT - 2.0:
 			continue
-		if absf(t - (-8.0)) < Tuning.T_XWALK_MIN_FROM_JUNCTION or absf(t - 8.0) < Tuning.T_XWALK_MIN_FROM_JUNCTION:
+		if absf(t - TownMap.ROADS[0]) < Tuning.T_XWALK_MIN_FROM_JUNCTION or absf(t - TownMap.ROADS[1]) < Tuning.T_XWALK_MIN_FROM_JUNCTION:
 			return {"ok": false, "reason": "near_junction"}
 		for id in signals:
 			var sg: Dictionary = signals[id]
@@ -403,6 +474,7 @@ func place_signal_at(pl: Dictionary, preset: int) -> bool:
 	if not pl.get("ok", false) or funds < Tuning.SIGNAL_COST:
 		return false
 	funds -= Tuning.SIGNAL_COST
+	decisions += 1
 	var sg := {"id": _next_sig, "kind": pl.kind, "j": pl.get("j", -1), "line": pl.get("line", -1), "t": pl.get("t", 0.0),
 		"pos": pl.pos, "preset": preset, "shift": sig_clock, "order": _order}
 	_next_sig += 1
@@ -443,12 +515,14 @@ func demolish_signal(id: int) -> void:
 	if sg.kind == 0:
 		junction_sig[sg.j] = -1
 	signals.erase(id)
+	decisions += 1
 	funds += int(Tuning.SIGNAL_COST * Tuning.DEMOLISH_REFUND_RATE)
 	_signals_changed()
 
 func set_signal_preset(id: int, preset: int) -> void:
-	if signals.has(id):
+	if signals.has(id) and signals[id].preset != preset:
 		signals[id].preset = preset
+		decisions += 1
 		_signals_changed()
 
 func _signals_changed() -> void:
@@ -540,7 +614,9 @@ func is_linked(id: int) -> bool:
 # ---------------------------------------------------------------------
 # メインループ
 # ---------------------------------------------------------------------
-func step(dt: float) -> void:
+## dt = シム秒（速度設定で伸び縮みする）、real_dt = 実時間の秒（バブルの寿命に使う。速度設定に連動しない）
+func step(dt: float, real_dt := -1.0) -> void:
+	var rdt := real_dt if real_dt >= 0.0 else dt
 	clock_s += dt * Tuning.CLOCK_RATE
 	sig_clock += dt
 	_field_budget = 2
@@ -551,26 +627,54 @@ func step(dt: float) -> void:
 	_step_peds(dt)
 	_update_discontent(dt)
 	_update_heat_and_waves(dt)
+	_update_bubbles(rdt)
 	_cleanup()
 	for e in events:
 		e.t += dt
 	events = events.filter(func(e): return e.t < 1.5)
+	if fail_reached and fail_clock < 0.0:
+		fail_clock = clock_hours()
+		var best_v := -1.0
+		for key in heat:
+			if heat[key] > best_v:
+				best_v = heat[key]
+				fail_pos = Vector2(key.x + 0.5, key.y + 0.5)
 	if clock_hours() >= loop_end_h:
 		last_loop = {"max_gauge": max_gauge, "hiyari": hiyari_total, "cross_jay": cross_jay,
 			"cross_walk": cross_walk, "signal": not signals.is_empty(), "fail": fail_reached,
 			"forced": forced_moves, "max_stop": max_stop_s, "trips": trips_done,
 			"car_delay": car_delay_sum / maxf(car_done_n, 1), "car_stop": car_stops_sum / maxf(car_done_n, 1), "car_n": car_done_n}
 		loop_count += 1
-		reset_loop()
+		if auto_loop:
+			reset_loop()
+		else:
+			day_over = true
+			clock_s = loop_end_h * 3600.0
+
+## 同じステージを、最初からやり直す（開発ポイントも信号も初期状態。速度設定は main が持つので変わらない）
+func restart() -> void:
+	signals.clear()
+	for i in 4:
+		junction_sig[i] = -1
+	links.clear()
+	_xrow.clear()
+	for dest in _fields:
+		_fields[dest].dirty = true
+	funds = Tuning.START_FUNDS
+	decisions = 0
+	sig_clock = 0.0
+	loop_count = 0
+	reset_loop()
 
 # ---------------------------------------------------------------------
 # 発生
 # ---------------------------------------------------------------------
-func _rate(base: float, peak: float) -> float:
-	var h := clock_hours()
+## 時刻 h（時）の発生率（1/シム秒）: 朝と夕の山に加えて、夜の山（night）
+func _rate_at(h: float, base: float, peak: float, night: float) -> float:
 	var x := (h - 7.9) / 0.7
 	var x2 := (h - 17.8) / 0.8
-	return base + peak * (exp(-x * x) + 0.8 * exp(-x2 * x2))
+	var x3 := (h - Tuning.T_NIGHT_PEAK_H) / Tuning.T_NIGHT_PEAK_W
+	return base + peak * (exp(-x * x) + 0.8 * exp(-x2 * x2)) + night * exp(-x3 * x3)
 
 func _spawn(dt: float) -> void:
 	# 予定表（建物から出る人）
@@ -579,33 +683,39 @@ func _spawn(dt: float) -> void:
 		_sched_i += 1
 	var still: Array = []
 	for tr in _pending:
-		if not _spawn_trip(tr.car, tr.role, tr.src, tr.dst):
+		if tr.get("through", false) and tr.tries == 0 and _spawn_rng.randf() < Tuning.T_THROUGH_SKIP:
+			continue            # 通過交通の量だけ、ループごとに少し変わる
+		if not _spawn_trip(tr.mode, tr.role, tr.src, tr.dst):
 			tr.tries += 1
 			if tr.tries < 600:
 				still.append(tr)
 	_pending = still
-	# 通過交通（ランダム）
-	_through_car_acc += _rate(Tuning.T_THROUGH_CAR_BASE, Tuning.T_THROUGH_CAR_PEAK) * dt * through_scale
-	while _through_car_acc >= 1.0:
-		_through_car_acc -= 1.0
-		var a := _spawn_rng.randi_range(0, 7)
-		var b := (a + _spawn_rng.randi_range(1, 7)) % 8
-		_spawn_trip(true, SimWorld.ROLE_COMMUTER, 100 + a, 100 + b)
-	_through_ped_acc += _rate(Tuning.T_THROUGH_PED_BASE, Tuning.T_THROUGH_PED_PEAK) * dt * through_scale
-	while _through_ped_acc >= 1.0:
-		_through_ped_acc -= 1.0
-		var a2 := _spawn_rng.randi_range(0, _edge_cells.size() - 1)
-		var b2 := (a2 + _spawn_rng.randi_range(1, _edge_cells.size() - 1)) % _edge_cells.size()
-		_spawn_ped_cells(TownMap.cell_index(_edge_cells[a2]), TownMap.cell_index(_edge_cells[b2]), SimWorld.ROLE_COMMUTER)
 
-func _spawn_trip(by_car: bool, role: int, src: int, dst: int) -> bool:
-	if by_car:
-		return _spawn_car(src, dst, role)
+## 通過交通の入口（重みつき）。exclude は選ばない入口（出口は入口と別にする）
+func _pick_edge_rng(rng: RandomNumberGenerator, exclude: int) -> int:
+	var total := 0.0
+	for e in 8:
+		if e != exclude:
+			total += Tuning.T_EDGE_WEIGHT[e]
+	var r := rng.randf() * total
+	for e in 8:
+		if e == exclude:
+			continue
+		r -= Tuning.T_EDGE_WEIGHT[e]
+		if r <= 0.0:
+			return e
+	return 7 if exclude != 7 else 6
+
+func _spawn_trip(mode: int, role: int, src: int, dst: int) -> bool:
+	if mode != 0:
+		return _spawn_car(src, dst, role, mode == 2)
+	if src >= 200:
+		return _spawn_ped_cells(TownMap.cell_index(_edge_cells[src - 200]), TownMap.cell_index(_edge_cells[dst - 200]), role)
 	var sc: Vector2i = TownMap.cell_of(TownMap.BUILDINGS[src].door)
 	var dc: Vector2i = TownMap.cell_of(TownMap.BUILDINGS[dst].door)
 	return _spawn_ped_cells(TownMap.cell_index(sc), TownMap.cell_index(dc), role)
 
-func _spawn_car(src: int, dst: int, _role: int) -> bool:
+func _spawn_car(src: int, dst: int, role: int, bike := false) -> bool:
 	var r := _route_for(src, dst)
 	if r.is_empty():
 		return true
@@ -626,6 +736,14 @@ func _spawn_car(src: int, dst: int, _role: int) -> bool:
 	c.pos = start
 	c.dir = (c.pts[1] - c.pts[0]).normalized()
 	c.look = _look_rng.randi()
+	c.role = role
+	c.bike = bike
+	c.vmax = Tuning.BIKE_SPEED if bike else Tuning.CAR_SPEED
+	c.accel = Tuning.BIKE_ACCEL if bike else Tuning.CAR_ACCEL
+	c.body_len = Tuning.BIKE_LENGTH if bike else Tuning.CAR_LENGTH
+	c.body_wid = Tuning.BIKE_WIDTH if bike else Tuning.CAR_WIDTH
+	if bike:
+		c.expected = r.length / Tuning.BIKE_SPEED
 	cars.append(c)
 	return true
 
@@ -1021,8 +1139,19 @@ func _step_cars(dt: float) -> void:
 		var sc: Array = _scan_ahead(c)
 		var free: float = sc[0]
 		var obs = sc[1]
+		# 安全弁: 交差点の中で15秒以上動けない車は、前の車を無視して進む（完全な詰まりを避ける。回数を記録）
+		if c.ji < c.jc.size() and c.jc[c.ji].state == 1 and c.wait_t > 15.0 and obs != null and obs.kind == KIND_CAR:
+			free = INF
+			obs = null
+			if not c.forced_flag:
+				c.forced_flag = true
+				forced_moves += 1
 		var obstacle_bound := true
 		var target: float = _xwalk_target(c)
+		# 秩序ある待ち: 赤信号で止まっている車、またはその後ろに並んでいる車
+		c.queue_orderly = obs != null and obs.kind == KIND_CAR and (obs.at_red or obs.queue_orderly)
+		if target < INF and target - c.s < 5.0:
+			c.at_red = true
 		if c.ji < c.jc.size() and c.jc[c.ji].state == 0:
 			target = minf(target, c.stop_target)
 		if target < INF:
@@ -1030,17 +1159,17 @@ func _step_cars(dt: float) -> void:
 			if f2 < free:
 				free = f2
 				obstacle_bound = false
-		var v_des := Tuning.CAR_SPEED
+		var v_des: float = c.vmax
 		if c.ji < c.jc.size():
 			var e3: Dictionary = c.jc[c.ji]
 			if c.s > e3.s_box_in - 0.8 and c.s < e3.s_box_out:
-				v_des = Tuning.CAR_BOX_SPEED
+				v_des = minf(Tuning.CAR_BOX_SPEED, c.vmax)
 		var fpos: float = maxf(free, 0.0)
 		var v_safe: float = sqrt(2.0 * Tuning.CAR_DECEL_COMFORT * fpos)
 		var v_target: float = minf(v_des, v_safe)
 		var v_new: float
 		if v_target >= c.v:
-			v_new = minf(v_target, c.v + Tuning.CAR_ACCEL * dt)
+			v_new = minf(v_target, c.v + c.accel * dt)
 		else:
 			var req_dec: float = c.v * c.v / (2.0 * maxf(fpos, 0.001))
 			if obstacle_bound and obs != null and obs.kind == KIND_PED and req_dec > Tuning.HIYARI_DECEL:
@@ -1074,10 +1203,10 @@ func _hiyari(c: Car, p) -> void:
 		return
 	c.hiyari_ids[p.id] = true
 	hiyari_total += 1
-	c.d = minf(100.0, c.d + Tuning.D_HIYARI_CAR)
-	p.d = minf(100.0, p.d + Tuning.D_HIYARI_PED)
-	_add_cause(c, "hiyari", Tuning.D_HIYARI_CAR)
-	_add_cause(p, "hiyari", Tuning.D_HIYARI_PED)
+	c.d = minf(100.0, c.d + Tuning.D_HIYARI_CAR * Tuning.T_D_SCALE)
+	p.d = minf(100.0, p.d + Tuning.D_HIYARI_PED * Tuning.T_D_SCALE)
+	_add_cause(c, "hiyari", Tuning.D_HIYARI_CAR * Tuning.T_D_SCALE)
+	_add_cause(p, "hiyari", Tuning.D_HIYARI_PED * Tuning.T_D_SCALE)
 	events.append({"pos": p.pos, "t": 0.0})
 	for o in _near(p.pos):
 		if o != c and o != p and o.pos.distance_to(p.pos) < Tuning.HIYARI_NEARBY_R:
@@ -1111,8 +1240,8 @@ func _crossing_safe(a: Vector2, b: Vector2) -> bool:
 
 static func _car_rect_dist(c: Car, p: Vector2) -> float:
 	var rel := p - c.pos
-	var fx: float = absf(rel.dot(c.dir)) - Tuning.CAR_LENGTH * 0.5
-	var fy: float = absf(rel.dot(Geo.left_of(c.dir))) - Tuning.CAR_WIDTH * 0.5
+	var fx: float = absf(rel.dot(c.dir)) - c.body_len * 0.5
+	var fy: float = absf(rel.dot(Geo.left_of(c.dir))) - c.body_wid * 0.5
 	return Vector2(maxf(fx, 0.0), maxf(fy, 0.0)).length()
 
 func _ped_green_left(cx: Dictionary) -> float:
@@ -1189,6 +1318,10 @@ func _step_peds(dt: float) -> void:
 # ---------------------------------------------------------------------
 # 不満度・熱マップ・波
 # ---------------------------------------------------------------------
+## 赤信号で待っている（秩序ある待ち）
+func _orderly_wait(x) -> bool:
+	return (x.kind == KIND_PED and x.wait_signal) or (x.kind == KIND_CAR and (x.at_red or x.queue_orderly))
+
 func _add_cause(x, key: String, v: float) -> void:
 	x.cause[key] = x.cause.get(key, 0.0) + v
 
@@ -1211,7 +1344,7 @@ func _update_discontent(dt: float) -> void:
 		var sum := 0.0
 		var cnt := 0
 		for o in _near(x.pos):
-			if o != x and o.waiting and o.pos.distance_to(x.pos) < Tuning.CONTAGION_R:
+			if o != x and o.waiting and not _orderly_wait(o) and o.pos.distance_to(x.pos) < Tuning.CONTAGION_R:
 				sum += o.d
 				cnt += 1
 		if cnt > 0:
@@ -1226,16 +1359,21 @@ func _update_discontent(dt: float) -> void:
 		else:
 			if x.kind == KIND_PED:
 				x.wait_t = 0.0
+		if x.waiting and _orderly_wait(x):
+			x.expected += dt          # 赤信号の待ちは予期された待ち。遅れには数えない
 		var sig_wait: bool = x.kind == KIND_PED and x.wait_signal
-		var tol := Tuning.WAIT_TOLERANCE_SIGNAL if (sig_wait or (x.kind == KIND_CAR and x.at_red)) else Tuning.WAIT_TOLERANCE
+		var tol := Tuning.WAIT_TOLERANCE_SIGNAL if (sig_wait or (x.kind == KIND_CAR and (x.at_red or x.queue_orderly))) else Tuning.WAIT_TOLERANCE
 		if x.waiting and x.wait_t > tol:
 			var rate := Tuning.D_WAIT_CAR
 			var key := "jam"
 			if x.kind == KIND_PED:
-				rate = Tuning.D_WAIT_PED_SIGNAL if sig_wait else Tuning.D_WAIT_PED
+				rate = Tuning.T_D_RED_PED if sig_wait else Tuning.D_WAIT_PED
 				key = "signal" if sig_wait else "jay"
-			elif x.at_red:
+			elif x.at_red or x.queue_orderly:
+				rate = Tuning.T_D_RED_CAR      # 赤信号の待ちは、渋滞よりゆるい（秩序ある待ち）
 				key = "signal"
+			if key != "signal":
+				rate *= Tuning.T_D_SCALE        # 倍率は衝突の不満だけ。信号待ち（秩序ある待ち）にはかけない
 			dd += rate * dt
 			_add_cause(x, key, rate * dt)
 		elif not x.waiting:
@@ -1249,10 +1387,19 @@ func _update_discontent(dt: float) -> void:
 		dd += b
 		x.d = clampf(x.d + dd, 0.0, 100.0)
 		total += x.d
-	var target := total / maxf(float(all.size()), Tuning.GAUGE_POP_FLOOR)
+	# ゲージ: 不満が高い上位K人の平均（空きは0）。街が広くても薄まらず、混んだ場所の不満が見える
+	var ds := PackedFloat32Array()
+	for x in all:
+		ds.append(x.d)
+	ds.sort()
+	var top := 0.0
+	var kk := mini(Tuning.T_GAUGE_K, ds.size())
+	for i in kk:
+		top += ds[ds.size() - 1 - i]
+	var target := top / float(Tuning.T_GAUGE_K)
 	gauge += (target - gauge) * (1.0 - exp(-Tuning.GAUGE_SMOOTH * dt))
 	max_gauge = maxf(max_gauge, gauge)
-	if gauge >= Tuning.GAUGE_LIMIT:
+	if gauge >= Tuning.T_GAUGE_LIMIT:
 		over_limit_game_s += dt * Tuning.CLOCK_RATE
 		if over_limit_game_s >= Tuning.FAIL_GAME_SECONDS:
 			fail_reached = true
@@ -1294,6 +1441,80 @@ func _update_heat_and_waves(dt: float) -> void:
 		x.pulse = maxf(0.0, x.pulse - dt * 1.5)
 	for x in peds:
 		x.pulse = maxf(0.0, x.pulse - dt * 1.5)
+
+# ---------------------------------------------------------------------
+# 不満バブル（待たされている人の頭上に出る。弾くと開発ポイント）
+# ---------------------------------------------------------------------
+func _update_bubbles(rdt: float) -> void:
+	var keep: Array = []
+	for b in bubbles:
+		b.age += rdt
+		var a = b.agent
+		if a.done:
+			_end_bubble(b, false)
+			continue
+		if auto_collect and b.auto_at >= 0.0 and b.age >= b.auto_at:
+			_collect(b)
+			continue
+		if b.age >= b.life:
+			_end_bubble(b, false)
+			continue
+		keep.append(b)
+	bubbles = keep
+	_since_collect += rdt
+	if bubbles.size() >= Tuning.T_BUBBLE_CAP:
+		return
+	var elig: Array = []
+	for x in cars:
+		if _bubble_eligible(x):
+			elig.append(x)
+	for x in peds:
+		if _bubble_eligible(x):
+			elig.append(x)
+	if elig.is_empty():
+		_bubble_acc = minf(_bubble_acc, 0.5)
+		return
+	# 出現率: 待っている人が多いほど上がり、出現総数が増えるほど下がる（自己調整）。停滞すると上がる
+	var rate: float = Tuning.T_BUBBLE_RATE * minf(1.0, elig.size() / 4.0) / (1.0 + bubble_stats.spawned / Tuning.T_BUBBLE_DECAY)
+	if funds < 50 and _since_collect > 15.0:
+		rate *= Tuning.T_BUBBLE_BOOST
+	_bubble_acc += rate * rdt
+	if _bubble_acc >= 1.0:
+		_bubble_acc -= 1.0
+		var x = elig[_bub_rng.randi_range(0, elig.size() - 1)]
+		var life := _bub_rng.randf_range(Tuning.T_BUBBLE_LIFE[0], Tuning.T_BUBBLE_LIFE[1])
+		var auto_at := life * _bub_rng.randf_range(0.3, 0.8) if _bub_rng.randf() < Tuning.T_BUBBLE_AUTO else -1.0
+		bubbles.append({"id": _bubble_id, "agent": x, "age": 0.0, "life": life, "auto_at": auto_at})
+		_bubble_id += 1
+		x.has_bubble = true
+		bubble_stats.spawned += 1
+
+func _bubble_eligible(x) -> bool:
+	return x.waiting and not x.has_bubble and x.wait_t > Tuning.T_BUBBLE_WAIT and sig_clock >= x.bubble_ready_at
+
+func _end_bubble(b: Dictionary, collected: bool) -> void:
+	b.agent.has_bubble = false
+	b.agent.bubble_ready_at = sig_clock + Tuning.T_BUBBLE_COOLDOWN
+	if not collected:
+		bubble_stats.missed += 1
+
+func _collect(b: Dictionary) -> void:
+	_end_bubble(b, true)
+	funds += Tuning.T_BUBBLE_VALUE
+	bubble_stats.collected += 1
+	_since_collect = 0.0
+	income_log.append([clock_hours(), funds])
+	b.collected = true
+
+## タップで弾く（第2回で使う）。弾けたら true
+func pop_bubble(id: int) -> bool:
+	for i in bubbles.size():
+		if bubbles[i].id == id:
+			var b: Dictionary = bubbles[i]
+			bubbles.remove_at(i)
+			_collect(b)
+			return true
+	return false
 
 func _cleanup() -> void:
 	for c in cars:

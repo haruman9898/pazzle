@@ -43,6 +43,7 @@ func setup(s: TownWorld) -> void:
 	_build_buildings()
 	_build_lamps()
 	_build_overlays()
+	set_night(0.0)
 
 # ---------------------------------------------------------------------
 func _mat(color: Color, alpha := 1.0, unshaded := false) -> StandardMaterial3D:
@@ -84,7 +85,8 @@ func _build_static() -> void:
 	_box(root, Vector3(E * 2 + 6, 0.1, E * 2 + 6), Vector2.ZERO, -0.1, _mat(C_GROUND))
 	# 区画（芝生）
 	var lawn := _mat(C_LAWN)
-	var spans := [[-E, -10.0], [-6.0, 6.0], [10.0, E]]
+	var rr: float = TownMap.ROADS[1]
+	var spans := [[-E, -(rr + 2.0)], [-(rr - 2.0), rr - 2.0], [rr + 2.0, E]]
 	for bx in 3:
 		for bz in 3:
 			var x0: float = spans[bx][0]
@@ -115,7 +117,8 @@ func _build_static() -> void:
 	# 中央線（交差点の手前まで）
 	var line := _mat(C_LINE)
 	for l in TownMap.LINE_COUNT:
-		for seg in [[-E, -9.2], [-6.8, 6.8], [9.2, E]]:
+		var rr2: float = TownMap.ROADS[1]
+		for seg in [[-E, -(rr2 + 1.2)], [-(rr2 - 1.2), rr2 - 1.2], [rr2 + 1.2, E]]:
 			var a: float = seg[0]
 			var b: float = seg[1]
 			var mid := (a + b) * 0.5
@@ -174,7 +177,6 @@ func _build_buildings() -> void:
 		_win_lit[i] = 1.0 if rng.randf() < 0.55 else 0.0
 		var wp: Array = win_pos[i]
 		_win_mm.set_instance_transform(i, Transform3D(Basis.from_scale(wp[1]), wp[0]))
-	set_night(0.0)
 
 func _build_lamps() -> void:
 	_pool_mat = _mat(Color(1.0, 0.78, 0.4), 0.0, true)
@@ -186,7 +188,7 @@ func _build_lamps() -> void:
 	var spots: Array = []
 	for l in TownMap.LINE_COUNT:
 		var c := TownMap.line_c(l)
-		for t in [-14.0, -3.5, 3.5, 14.0]:
+		for t in [-11.0, 0.0, 11.0]:
 			for side in [-1.0, 1.0]:
 				var off: float = side * 2.0     # 歩道の外側の縁
 				var p := TownMap.line_point(l, t) + (Vector2(0, off) if TownMap.line_axis(l) == 0 else Vector2(off, 0))
@@ -283,7 +285,8 @@ func set_wet(on: bool) -> void:
 func set_night(f: float) -> void:
 	for m in _lamp_mats:
 		m.emission_energy_multiplier = 0.1 + 3.0 * f
-	_pool_mat.albedo_color.a = 0.16 * f
+	if _pool_mat != null:
+		_pool_mat.albedo_color.a = 0.16 * f
 	if absf(f - _win_night) < 0.02 or _win_mm == null:
 		return
 	_win_night = f
